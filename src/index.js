@@ -27,6 +27,28 @@ const server = createApp().listen(port, host, () => {
   void refreshBusinessMirror().catch(() => {});
 });
 
+/**
+ * A listen failure must be loud.
+ *
+ * Windows binds the socket before it listens, so an occupied port is reported
+ * asynchronously — after the banner above has already printed. Left unhandled
+ * the error goes nowhere, the server handle is gone, and the only thing still
+ * holding the event loop open is the pool's idle connection. Thirty seconds
+ * later that times out, the loop drains and the process exits 0: a service that
+ * announced itself, sat there looking healthy, then vanished without a word.
+ */
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\nPort ${port} is already in use — another scraper service is still running.`);
+    console.error(`  find it:  netstat -ano | findstr :${port}`);
+    console.error(`  stop it:  taskkill /PID <pid> /F`);
+    console.error(`  or set SCRAPER_PORT in .env to a free port.`);
+  } else {
+    console.error(`\nthe service could not start: ${err.message}`);
+  }
+  process.exit(1);
+});
+
 // A run holds the only Chrome session. Releasing it on the way out avoids
 // leaving a ghost that blocks the next run.
 let shuttingDown = false;
