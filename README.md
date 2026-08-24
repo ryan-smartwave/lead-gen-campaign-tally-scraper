@@ -1,97 +1,139 @@
-# Campaign hashtag tally — scraper
+# Campaign hashtag tally — scraper service
 
-> **Paired repository:** `lead-gen-campaign-tally-ui` is a web app that drives this
-> scraper as a library and stores results in Postgres instead of files. This repo
-> works entirely on its own from the terminal — the UI is optional.
+Counts posts for a set of **campaign hashtags** on **Instagram and Facebook**, for
+any number of businesses, by driving your own signed-in Chrome through
+[mcp-chrome](https://github.com/hangwin/mcp-chrome). Results go to Postgres.
 
-A **standalone** tool that counts posts for a set of **campaign hashtags** on **Facebook and Instagram**, once a day, over the life of a campaign — driven through your own logged-in Chrome via [mcp-chrome](https://github.com/hangwin/mcp-chrome).
+Runs as a **local Express service** that the
+[`lead-gen-campaign-tally-ui`](../lead-gen-campaign-tally-ui) app calls over HTTP,
+and also works as a **standalone CLI** with no database at all.
 
-It is designed around one hard requirement: **run daily for months without getting the account flagged or banned.** Read [ANTIBAN.md](ANTIBAN.md) — it is the design basis, not an afterthought.
+It is designed around one hard requirement: **run daily for months without the
+account getting flagged.** Read [ANTIBAN.md](ANTIBAN.md) — it is the design basis,
+not an afterthought.
 
-> Standalone: this lives in the SmartWave repo for convenience but has no dependency on the lead-gen product. It's a self-contained monitoring tool.
+## Why a service
 
-## What it produces
+A run takes 30–60 minutes. Owning it in its own process means a run survives the
+UI being restarted, rebuilt or closed — and because only this process holds the
+Chrome session, shutdown can release it cleanly instead of leaving a ghost that
+blocks the next run.
 
-- **`data/tally.csv`** — the deliverable: one row per hashtag per run — `run_at, date, platform, hashtag, new_posts, cumulative_unique, status`. This is your campaign time series (daily new posts + running unique total per hashtag).
-- **`data/posts/<platform>-<hashtag>.jsonl`** — audit trail of every post counted (id, url, preview/author, firstSeenAt).
-- **`data/seen.json`** — cumulative unique post IDs per hashtag (dedup memory; makes the tally crash- and skip-resilient).
+It listens on **loopback only**, deliberately: these endpoints drive a real
+signed-in browser, so they must not be reachable from the network.
 
-## How it works (one daily run)
+## Setup
 
+1. Install the **mcp-chrome extension** (from its
+   [releases](https://github.com/hangwin/mcp-chrome/releases), loaded unpacked at
+   `chrome://extensions/`) and the bridge: `npm install -g mcp-chrome-bridge`.
+2. Open the extension popup → **Connect** (shows *Service Running · Port 12306*).
+3. In that Chrome profile, **log into Instagram and Facebook** — use a
+   **dedicated, aged account you can afford to lose**, not a personal one (see
+   ANTIBAN.md §2).
+4. `npm install`, then `cp .env.example .env` and put your Postgres connection
+   string in it.
+5. Create the schema: `npm run db:migrate`
+6. `npm run serve`
+
+## Commands
+
+```bash
+npm run serve        # the HTTP service (what the UI talks to)
+npm run businesses   # list configured businesses
+npm run check        # verify the mcp-chrome connection
+npm run run-once     # scrape from the terminal, writing FILES (no database)
+npm run db:migrate   # apply schema migrations
+npm run db:check     # read back what the database holds
+npm run db:clear     # empty collected results, keeping businesses
+npm test             # unit tests (no Chrome, no database, no network)
 ```
-shuffle hashtags ─► for each (bounded by maxHashtagsPerRun & maxRunMinutes):
-   navigate to hashtag page  ─► assertSafe (login/checkpoint/rate-limit? → ABORT run, no retry)
-   random dwell ─► human incremental scroll ×N with jittered pauses ─► assertSafe again
-   extract unique post IDs in-page (chrome_javascript, read-only)
-   record new vs. cumulative ─► append tally row
-   random multi-minute gap ─► next hashtag
-```
-
-Everything is **read-only** (navigate, scroll, read DOM). No likes, follows, comments, or DMs — ever.
 
 ## Businesses
 
-Each business tracked has its own hashtags, history and duplicate-tracking:
+Each business has its own hashtags and its own history:
 
 ```
 config.json              shared: mcpEndpoint + safety limits (the anti-ban firewall)
 businesses/<id>.json     per business: { name, hashtags: [{platform, value}] }
-data/<id>/               per business: tally.csv, seen.json, posts/, run.lock
+data/                    run.lock, runs.log, and CLI-mode results
 ```
 
-```bash
-npm run businesses            # list what's defined
-npm run run-once              # scrape the first business
-node src/index.js --run --business acme-events
-node src/index.js --check --business acme-events
+Manage them from the UI's settings screen, or edit the files directly — the
+service reads and writes the same files, so the two can never disagree. It
+mirrors business definitions into Postgres on change and at startup, so the UI
+can read them without filesystem access.
+
+**Safety limits are file-only and have no write route.** Hashtags are content;
+timing and volume limits are what keep the account unflagged, so nothing in the
+API can widen them.
+
+## HTTP API
+
+All JSON, all loopback.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | liveness, database and Chrome config, whether a run is live |
+| `GET` | `/preflight?business=` | can a run start, and if not exactly why |
+| `GET` | `/businesses` | list businesses and their hashtags |
+| `POST` | `/businesses` | create one (`{name, hashtags}`) |
+| `PATCH` | `/businesses/:slug` | rename and/or replace its hashtags |
+| `DELETE` | `/businesses/:slug` | remove the definition; results are kept |
+| `POST` | `/runs` | start a run (`{business, force?}`) → `202` |
+| `GET` | `/runs/active` | replayable snapshot of the in-flight run |
+| `DELETE` | `/runs/active` | stop a live run, or dismiss a finished one's log |
+| `GET` | `/runs/events?sinceSeq=` | server-sent event stream |
+
+Refusals are meaningful, not generic: `already_ran_today` (overridable with
+`force`), `already_running`, `mcp_unreachable`, `db_not_configured`,
+`no_hashtags`.
+
+## Layout
+
+```
+bin/cli.js              standalone CLI (file-backed, no database)
+src/index.js            service entry point
+src/app.js              Express app
+src/config/             config.json + businesses, and env
+src/controllers/         request handling
+src/routes/              endpoint definitions
+src/middlewares/         error translation
+src/services/            the run loop, MCP client, extraction, safety, supervisor
+src/stores/              file-backed and Postgres-backed run stores
+src/db/                  connection pool
+src/utils/               campaign day, run ledger, ApiError
+db/migrations/           schema (this repo owns it, being the writer)
 ```
 
-Businesses are easiest to manage from the settings screen of the paired
-`lead-gen-campaign-tally-ui` repo, which writes these same files. Editing them by
-hand works identically.
+## Two storage modes
 
-Separate `seen.json` files mean two businesses tracking the same hashtag keep independent counts
-and cannot corrupt each other. They share one Chrome session, so only one may scrape at a time —
-the per-business `run.lock` plus the single session enforce that.
+| Mode | Used by | Results go to | Deduplication |
+|---|---|---|---|
+| **database** | `npm run serve` | Postgres | count of post rows actually inserted |
+| **file** | `npm run run-once` | `data/<id>/` CSV + JSONL | `seen.json` |
 
-## Setup (one-time)
+Both are the same run loop with a different store injected. **Don't mix them for
+the same business** — each keeps its own deduplication memory, so a hashtag
+scraped through one path looks new to the other.
 
-1. Install the **mcp-chrome extension** (from its [releases](https://github.com/hangwin/mcp-chrome/releases), load unpacked at `chrome://extensions/`) and the bridge: `npm install -g mcp-chrome-bridge`.
-2. Open the extension popup → **Connect** (shows *Service Running · Port 12306*).
-3. In that same Chrome profile, **log into Instagram and Facebook** — use a **dedicated, aged account you can afford to lose**, not a personal/primary one (see ANTIBAN.md §2).
-4. `npm install`.
+Two things stay on disk in either mode, and neither is scraped content:
+`data/run.lock` (guards Chrome — global, because every business shares one
+browser session) and `data/runs.log` (one line per run, the memory behind the
+once-a-day guard, so clearing the database cannot make it forget).
 
-## Usage
+## Platform notes
 
-```bash
-npm run check      # verify the mcp-chrome connection
-npm run run-once   # perform ONE daily run over all configured hashtags
-```
-
-Run it **manually once a day**, or schedule it once daily at a slightly randomized time (e.g. Windows Task Scheduler). **Do not** loop it or run it more than once a day — that defeats the entire anti-ban design.
-
-## Configuration (`config.json`)
-
-```json
-"hashtags": [ { "platform": "instagram", "value": "yourcampaigntag" } ],
-"safety": {
-  "maxHashtagsPerRun": 12,           // hard cap on pages touched per run
-  "maxRunMinutes": 60,               // run stops when the clock budget is hit
-  "scrollsPerHashtag": 5,            // gentle sampling; more = more posts but more risk
-  "scrollPauseMs": [3000, 9000],     // randomized pause between scrolls
-  "gapBetweenHashtagsMs": [180000, 420000],  // 3–7 min randomized gap between searches
-  "initialDwellMs": [2000, 5000],    // human "look at the page" pause on load
-  "pageLoadDelayMs": 6000
-}
-```
-
-All delays are **ranges** — the tool picks a random value inside each, so there is no fixed rhythm to fingerprint. The gap range is what stretches a run across the 30–60 min window dyoool asked for.
-
-## Platform notes (validated 2026-08-24)
-
-- **Instagram** is the strong target: an IG hashtag page yields ~50–70 posts per run, identified by post shortcode (`/p/…`, `/reel/…`) with the caption captured (supplier @mentions and all).
-- **Facebook** works but returns fewer (~4–15/run). FB is scraped via `facebook.com/search/posts?q=%23<tag>`, not `/hashtag/` (Meta degraded the latter). Facebook **redacts post URLs** in the automation layer, so posts are identified by a **content fingerprint** (author + caption, digits stripped so changing engagement counts don't drift the id) rather than by URL; real photo/album `fbid`s are used when present. This means FB records have no `url`, only a stable `id` — fine for a tally.
-- mcp-chrome also redacts person names in returned fields (author may show `<redacted>`), but the real name is inside the caption text and is used for the in-page fingerprint, so counting/dedup is unaffected.
-- The tally counts **unique posts observed via sampling**, not the platform's true total hashtag count (never reliably exposed). Over a daily campaign the cumulative curve is the useful signal.
-- DOM selectors and extraction logic live in [src/extract.js](src/extract.js) and are brittle by nature — FB/IG change markup without notice. [diagnose.mjs](diagnose.mjs) is a dev helper for re-inspecting a page's structure when extraction returns 0: `node diagnose.mjs "<url>"`.
-- If a run aborts on a danger signal, **stop for the day**, clear the checkpoint manually in the browser, and resume tomorrow. Blocks escalate on retry.
+- **Instagram** is the strong target: a hashtag page yields ~50–70 posts per run,
+  identified by post shortcode, with the caption captured.
+- **Facebook** works but returns fewer (~4–15/run), and is scraped via
+  `facebook.com/search/posts?q=%23<tag>` rather than `/hashtag/`. Facebook hides
+  post URLs from the automation layer, so those posts are identified by a
+  **content fingerprint** of author and caption. Facebook records therefore have
+  no URL — fine for a tally.
+- mcp-chrome also redacts person names in returned fields, so an author may read
+  `<redacted>`. The real name is inside the caption text used for the
+  fingerprint, so counting is unaffected.
+- Selectors live in [src/services/extract.service.js](src/services/extract.service.js)
+  and are brittle by nature. [diagnose.mjs](diagnose.mjs) re-inspects a page when
+  extraction returns 0: `node diagnose.mjs "<url>"`.

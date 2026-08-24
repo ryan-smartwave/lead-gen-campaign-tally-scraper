@@ -1,9 +1,9 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { connect, disconnect, evalJs, sleep } from "./mcp.js";
-import { IG_EXTRACT, FB_EXTRACT } from "./extract.js";
-import { createFileStore } from "./stores.js";
+import { connect, disconnect, evalJs, sleep } from "./mcp.service.js";
+import { IG_EXTRACT, FB_EXTRACT } from "./extract.service.js";
+import { createFileStore } from "../stores/fileStore.js";
 import {
   rand,
   jitter,
@@ -12,8 +12,8 @@ import {
   humanScroll,
   assertSafe,
   BlockError,
-} from "./safety.js";
-import { hashtagUrl } from "./config.js";
+} from "./safety.service.js";
+import { hashtagUrl } from "../config/index.js";
 
 /**
  * The run loop, as a library.

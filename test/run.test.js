@@ -1,4 +1,4 @@
-import { test } from "node:test";
+﻿import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,8 +9,8 @@ import {
   releaseLock,
   lockPathFor,
   AlreadyRunningError,
-} from "../src/run.js";
-import { BlockError } from "../src/safety.js";
+} from "../src/services/run.service.js";
+import { BlockError } from "../src/services/safety.service.js";
 /** A config with every delay zeroed, so a full run finishes in milliseconds. */
 function fastConfig(hashtags, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "run-test-"));

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { TallyStore } from "../src/tally.js";
+import { TallyStore } from "../src/stores/tally.js";
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tally-test-"));

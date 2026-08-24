@@ -1,4 +1,4 @@
-import { evalJs, callTool, sleep } from "./mcp.js";
+import { evalJs, callTool, sleep } from "./mcp.service.js";
 
 export const rand = (min, max) => min + Math.random() * (max - min);
 export const randInt = (min, max) => Math.floor(rand(min, max + 1));

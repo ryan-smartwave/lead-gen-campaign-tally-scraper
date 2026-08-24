@@ -17,7 +17,14 @@ import { fileURLToPath } from "node:url";
  * account banned.
  */
 
-export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+/**
+ * The repository root: three levels up from src/config/index.js.
+ *
+ * Derived from this module's own location rather than cwd, so the CLI, the
+ * service and the test suite all resolve config.json, businesses/ and data/ to
+ * the same place no matter where they were started from.
+ */
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // tally.csv is written by plain string concatenation, so a comma or newline in a
 // hashtag would corrupt it. Validating here is what keeps that safe.

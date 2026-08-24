@@ -11,7 +11,7 @@ import {
   readBusiness,
   validateHashtags,
   slugify,
-} from "../src/config.js";
+} from "../src/config/index.js";
 
 /** A throwaway scraper root with a valid global config.json. */
 function tmpRoot() {

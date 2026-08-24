@@ -1,19 +1,27 @@
 {
-  "name": "campaign-hashtag-tally",
-  "version": "0.2.0",
-  "description": "Standalone daily tally of campaign hashtags on Facebook and Instagram, driven through your own logged-in Chrome via mcp-chrome. Built for low-risk, once-a-day runs.",
+  "name": "lead-gen-campaign-tally-scraper",
+  "version": "0.3.0",
+  "description": "Local Express service that tallies campaign hashtags on Instagram and Facebook by driving your own signed-in Chrome, storing results in Postgres. Also usable as a standalone CLI.",
   "type": "module",
   "private": true,
+  "main": "src/index.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
-    "run-once": "node src/index.js --run",
-    "check": "node src/index.js --check",
-    "businesses": "node src/index.js --list",
+    "serve": "node src/index.js",
+    "run-once": "node bin/cli.js --run",
+    "check": "node bin/cli.js --check",
+    "businesses": "node bin/cli.js --list",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:check": "node scripts/db-check.mjs",
+    "db:clear": "node scripts/db-clear.mjs",
     "test": "node --test test/"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
   }
 }
