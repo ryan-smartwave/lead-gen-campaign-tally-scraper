@@ -1,4 +1,4 @@
-﻿import { query, requireDb } from "../db/pool.js";
+import { query, requireDb } from "../db/pool.js";
 import { campaignDay } from "../utils/day.js";
 
 /**
@@ -18,6 +18,12 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
   const day = campaignDay(runId);
 
   // Opens the run row. Awaited before any write, so the foreign key exists.
+  //
+  // This promise starts eagerly, so if it rejects with nothing yet awaiting it
+  // Node reports an unhandled rejection and tears the process down — which is
+  // exactly how a single bad constraint once killed the whole service. The
+  // no-op catch below marks it handled; every `await ready` still rejects
+  // normally, so failures surface to the caller instead of the process.
   const ready = (async () => {
     // The lock guarantees no other run is live, so a row still marked running
     // belongs to a crashed process and can be closed out.
@@ -35,9 +41,15 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       [runId, business, campaign, runId, day, budgetMinutes, JSON.stringify(targets)],
     );
   })();
+  ready.catch(() => {});
 
   return {
     kind: "database",
+
+    /** Resolves once the run row exists; rejects if the database refused it. */
+    async open() {
+      await ready;
+    },
 
     async record(h, posts) {
       await ready;

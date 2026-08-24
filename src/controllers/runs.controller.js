@@ -13,6 +13,8 @@ const STATUS_FOR = {
   ALREADY_RUNNING: 409,
   ALREADY_RAN_TODAY: 409,
   DB_NOT_CONFIGURED: 503,
+  // The database refused the run row, or was unreachable. Nothing was started.
+  STORE_UNAVAILABLE: 503,
 };
 
 /** Starts a run and returns as soon as it has begun; the run continues here. */

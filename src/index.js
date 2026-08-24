@@ -48,3 +48,25 @@ async function shutdown(signal) {
 
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
+/**
+ * Keep serving through a stray rejection.
+ *
+ * A background write that nobody awaited — a heartbeat against a sleeping
+ * database, say — must not end the process. It once did: one refused insert
+ * killed the service mid-run and left the Chrome session held. Logging loudly
+ * and staying up is strictly better here, because the operator needs the service
+ * alive to see what happened and to stop the run cleanly.
+ */
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandled rejection (service staying up):", reason);
+});
+
+/**
+ * An uncaught exception is different: state is unknown, so continuing is not
+ * safe. Release the browser first, then exit, rather than orphaning the session.
+ */
+process.on("uncaughtException", (err) => {
+  console.error("uncaught exception:", err);
+  void shutdown("uncaughtException");
+});

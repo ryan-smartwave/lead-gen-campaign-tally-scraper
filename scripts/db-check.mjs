@@ -11,9 +11,17 @@ import pg from "pg";
  */
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-for (const line of fs.readFileSync(path.join(root, ".env.local"), "utf8").split(/\r?\n/)) {
+for (const name of [".env", ".env.local"]) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(root, name), "utf8");
+  } catch {
+    continue;
+  }
+  for (const line of text.split(/\r?\n/)) {
   const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-  if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });

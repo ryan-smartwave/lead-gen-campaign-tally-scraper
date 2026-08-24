@@ -1,4 +1,4 @@
-﻿import { run } from "./run.service.js";
+import { run } from "./run.service.js";
 import { loadConfig, listBusinesses, ROOT } from "../config/index.js";
 import { createDbStore, closeRun, heartbeat, ranOnDay, syncBusinesses } from "../stores/dbStore.js";
 import { createFileStore } from "../stores/fileStore.js";
@@ -136,6 +136,20 @@ export async function startRun({ business, force = false, store = "database" } =
           budgetMinutes: config.safety.maxRunMinutes,
           targets,
         });
+
+  // Prove the store works before anything else happens. A store that cannot
+  // open — a refused insert, a sleeping database — must fail here, with no lock
+  // taken, no ledger entry written and no browser touched. Learned the hard way:
+  // letting that failure surface later took the whole service down with it.
+  if (results.open) {
+    try {
+      await results.open();
+    } catch (err) {
+      const wrapped = new Error(`could not open the results store: ${err.message}`);
+      wrapped.code = "STORE_UNAVAILABLE";
+      throw wrapped;
+    }
+  }
 
   state.events = [];
   state.finished = false;

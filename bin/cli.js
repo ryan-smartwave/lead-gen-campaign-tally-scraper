@@ -1,4 +1,4 @@
-﻿import path from "node:path";
+import path from "node:path";
 import { setMaxListeners } from "node:events";
 import { loadConfig, listBusinesses, ROOT } from "../src/config/index.js";
 import { run, check } from "../src/services/run.service.js";
