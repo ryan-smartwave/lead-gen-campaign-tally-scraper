@@ -1,0 +1,21 @@
+{
+  "mcpEndpoint": "http://127.0.0.1:12306/mcp",
+  "safety": {
+    "maxHashtagsPerRun": 12,
+    "maxRunMinutes": 60,
+    "scrollsPerHashtag": 5,
+    "scrollPauseMs": [
+      3000,
+      9000
+    ],
+    "gapBetweenHashtagsMs": [
+      180000,
+      420000
+    ],
+    "initialDwellMs": [
+      2000,
+      5000
+    ],
+    "pageLoadDelayMs": 6000
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "campaign-hashtag-tally",
+  "version": "0.2.0",
+  "description": "Standalone daily tally of campaign hashtags on Facebook and Instagram, driven through your own logged-in Chrome via mcp-chrome. Built for low-risk, once-a-day runs.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "run-once": "node src/index.js --run",
+    "check": "node src/index.js --check",
+    "businesses": "node src/index.js --list",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

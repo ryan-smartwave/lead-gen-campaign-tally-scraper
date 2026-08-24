@@ -1,0 +1,58 @@
+import fs from "node:fs";
+import path from "node:path";
+
+// Cumulative, crash-resilient tally store:
+//   seen.json          — { "<platform>:<value>": [postId, ...] } all-time unique IDs per hashtag
+//   posts/<key>.jsonl  — one line per newly-seen post (audit trail of what was counted)
+//   tally.csv          — one row per hashtag per run: the campaign time series
+
+export class TallyStore {
+  constructor(dataDir) {
+    this.dataDir = dataDir;
+    this.postsDir = path.join(dataDir, "posts");
+    this.seenPath = path.join(dataDir, "seen.json");
+    this.csvPath = path.join(dataDir, "tally.csv");
+    fs.mkdirSync(this.postsDir, { recursive: true });
+    this.seen = fs.existsSync(this.seenPath)
+      ? JSON.parse(fs.readFileSync(this.seenPath, "utf8"))
+      : {};
+    if (!fs.existsSync(this.csvPath)) {
+      fs.writeFileSync(
+        this.csvPath,
+        "run_at,date,platform,hashtag,new_posts,cumulative_unique,status\n",
+      );
+    }
+  }
+
+  static key(h) {
+    return `${h.platform}:${h.value}`;
+  }
+
+  // Records freshly-seen posts, returns { newCount, cumulative }.
+  record(h, posts, runAt) {
+    const key = TallyStore.key(h);
+    const seenIds = new Set(this.seen[key] ?? []);
+    const fresh = posts.filter((p) => !seenIds.has(p.id));
+    for (const p of fresh) seenIds.add(p.id);
+    this.seen[key] = [...seenIds];
+
+    if (fresh.length) {
+      const lines =
+        fresh
+          .map((p) => JSON.stringify({ ...p, firstSeenAt: runAt }))
+          .join("\n") + "\n";
+      fs.appendFileSync(path.join(this.postsDir, `${h.platform}-${h.value}.jsonl`), lines);
+    }
+    return { newCount: fresh.length, cumulative: seenIds.size };
+  }
+
+  writeRow(h, runAt, newCount, cumulative, status) {
+    const date = runAt.slice(0, 10);
+    const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${status}\n`;
+    fs.appendFileSync(this.csvPath, row);
+  }
+
+  save() {
+    fs.writeFileSync(this.seenPath, JSON.stringify(this.seen, null, 2));
+  }
+}

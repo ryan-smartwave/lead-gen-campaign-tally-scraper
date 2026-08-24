@@ -1,0 +1,10 @@
+node_modules/
+
+# Scraped results, dedup memory, the run lock and the run ledger. Runtime state,
+# never source — and it can contain post content, so it stays out of git.
+data/
+
+# Belt and braces: no credentials in this repo, and none should arrive.
+.env
+.env.local
+.env*.local
