@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { countFresh } from "../utils/freshness.js";
 
 // Cumulative, crash-resilient tally store:
 //   seen.json          — { "<platform>:<value>": [postId, ...] } all-time unique IDs per hashtag
@@ -19,7 +20,7 @@ export class TallyStore {
     if (!fs.existsSync(this.csvPath)) {
       fs.writeFileSync(
         this.csvPath,
-        "run_at,date,platform,hashtag,new_posts,cumulative_unique,status\n",
+        "run_at,date,platform,hashtag,new_posts,cumulative_unique,fresh_posts,status\n",
       );
     }
   }
@@ -28,8 +29,8 @@ export class TallyStore {
     return `${h.platform}:${h.value}`;
   }
 
-  // Records freshly-seen posts, returns { newCount, cumulative }.
-  record(h, posts, runAt) {
+  // Records freshly-seen posts, returns { newCount, freshCount, cumulative }.
+  record(h, posts, runAt, window = { start: null, end: null }) {
     const key = TallyStore.key(h);
     const seenIds = new Set(this.seen[key] ?? []);
     const fresh = posts.filter((p) => !seenIds.has(p.id));
@@ -43,7 +44,8 @@ export class TallyStore {
           .join("\n") + "\n";
       fs.appendFileSync(path.join(this.postsDir, `${h.platform}-${h.value}.jsonl`), lines);
     }
-    return { newCount: fresh.length, cumulative: seenIds.size };
+    const freshCount = countFresh(fresh, window);
+    return { newCount: fresh.length, freshCount, cumulative: seenIds.size };
   }
 
   // When was each hashtag last visited? Read from tally.csv rather than kept in
@@ -67,9 +69,51 @@ export class TallyStore {
     return out;
   }
 
-  writeRow(h, runAt, newCount, cumulative, status) {
+  // Merges enrichment results into an already-recorded post line in
+  // posts/<platform>-<value>.jsonl. Deliberately does NOT touch seen.json or
+  // any count: the post was already counted by `record`, enrichment only
+  // fills in detail it didn't have yet. A missing file or unmatched id is a
+  // silent no-op — enrichment is best-effort and must never throw.
+  enrichPost(h, record) {
+    const file = path.join(this.postsDir, `${h.platform}-${h.value}.jsonl`);
+    let lines;
+    try {
+      lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+    } catch {
+      return;
+    }
+    let changed = false;
+    const merged = lines.map((line) => {
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        return line;
+      }
+      if (row.id !== record.id) return line;
+      changed = true;
+      const next = { ...row };
+      // Fill fields the DOM-only sighting left empty.
+      for (const k of ["caption", "username", "takenAt", "imageUrl"]) {
+        if (next[k] == null && record[k] != null) next[k] = record[k];
+      }
+      // Engagement counts are refreshed, not just filled — a later visit's
+      // like/comment count is more current than the first sighting's.
+      for (const k of ["likeCount", "commentCount"]) {
+        if (record[k] != null) next[k] = record[k];
+      }
+      // Always stamped: this store call IS the enrichment event, so it marks
+      // when it happened even if the caller's record forgot to.
+      next.enrichedAt = record.enrichedAt ?? new Date().toISOString();
+      return JSON.stringify(next);
+    });
+    if (!changed) return;
+    fs.writeFileSync(file, merged.join("\n") + "\n");
+  }
+
+  writeRow(h, runAt, newCount, cumulative, status, freshCount = 0) {
     const date = runAt.slice(0, 10);
-    const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${status}\n`;
+    const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${freshCount},${status}\n`;
     fs.appendFileSync(this.csvPath, row);
   }
 

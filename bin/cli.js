@@ -24,7 +24,7 @@ function printer(config) {
         break;
       case "hashtag_done":
         console.log(
-          `  ${e.platform} #${e.hashtag}: ${e.postsOnPage} on page, +${e.newCount} new, ${e.cumulative} total`,
+          `  ${e.platform} #${e.hashtag}: ${e.postsOnPage} on page, +${e.newCount} new (${e.freshCount ?? e.newCount} in-campaign), ${e.cumulative} total`,
         );
         break;
       case "hashtag_error":
@@ -32,6 +32,7 @@ function printer(config) {
         break;
       case "danger":
         console.error(`  DANGER: ${e.message} — aborting the whole run (no retry).`);
+        if (e.incidentDir) console.error(`  incident saved: ${e.incidentDir}`);
         break;
       case "waiting":
         console.log(

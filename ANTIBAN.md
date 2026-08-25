@@ -28,6 +28,42 @@ Passive reading of a few hashtag feeds, from a real logged-in browser on a resid
 8. **Daily only, never continuous.** One short run per day. No polling loops, no background hammering.
 9. **Resilient tally.** The per-hashtag counts are cumulative and persisted, so a skipped or aborted day never corrupts the campaign series — the next run just picks up.
 
+## Throughput and enrichment — safe by design
+
+**Tab pipelining is safe.** A run uses one and only one active tab at all times.
+During the mandatory idle gap between hashtags (3–7 minutes, randomized), that one
+tab is pre-navigated to the *next* hashtag's URL while the account waits. When the
+gap ends, scrolling starts immediately instead of waiting for navigation. This saves
+time, not risk: activity is still strictly sequential (one scroll, one navigation, one
+tab), and the fixed, multi-minute gap is preserved — behavior stays human-like and
+cannot produce a parallel-scraping signature. If the tab-navigation capability becomes
+unavailable, the tool degrades to plain sequential visits (no preload) automatically.
+
+**Rich post enrichment is capped and careful.** When hashtag scrolling captures posts
+missing key fields (username, caption, posted-at timestamp — common on initial load),
+a capped post-visit phase enriches them by visiting individual post pages. The budget
+is strict: at most `safety.maxPostVisitsPerRun` visits per run (default 8), distributed
+across the enrichment queue, human-paced with the same random dwell times and multi-minute
+gaps as the main loop. If a post page hits a danger sign (login wall, checkpoint, etc.),
+the entire enrichment phase stops immediately and never retries — keeping with §7 (abort
+on the first danger sign). Unenriched posts are still counted in the tally (unknown age
+or missing fields do not make them invalid).
+
+**Forensics always on.** Every run writes an action journal to `data/journal/<runId>.jsonl`,
+one line per navigation, scroll, dwell, gap, enrichment visit, and danger event, timestamped
+and sequenced. The journal is retained for 30 days and pruned automatically. On any danger
+sign, an incident bundle is written to `data/incidents/<runId>/` — `incident.json` with
+the reason, URL, and context; best-effort `page.txt` (extracted DOM) and `screenshot.png`;
+plus a cumulative `data/incidents/index.log` for quick review. The tool itself is designed
+to avoid flags, but the journal and incidents exist to *detect and diagnose* any that occur
+— a complete forensic trail of what the account did, when, and what the platform responded with.
+
+**Same-account parallel scraping was rejected.** A design considered concurrent scraping
+on the same account via multiple tabs (trading safety for speed) — e.g., two hashtags
+scrolling at once. This was rejected explicitly: multiple concurrent navigations and scrolls
+from the same IP/account in a short window is a textbook bot signature, and the research notes
+it as a primary flag trigger. The tool is sequential by choice.
+
 ## If something does go wrong
 
 - **Login wall / checkpoint appears:** stop using the tool that day. Open Instagram/Facebook manually in that Chrome profile, clear the checkpoint like a normal human, use the app normally for a bit, and resume the tool the next day.

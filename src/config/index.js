@@ -30,9 +30,26 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 // hashtag would corrupt it. Validating here is what keeps that safe.
 const HASHTAG_RE = /^[A-Za-z0-9_.]+$/;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PLATFORMS = new Set(["instagram", "facebook"]);
 const PAIR_KEYS = ["scrollPauseMs", "gapBetweenHashtagsMs", "initialDwellMs", "startJitterMs"];
 const NUM_KEYS = ["maxHashtagsPerRun", "maxRunMinutes", "scrollsPerHashtag", "pageLoadDelayMs"];
+
+export function validateCampaignDates(campaignStart, campaignEnd) {
+  const problems = [];
+  const check = (label, v) => {
+    if (v == null) return null;
+    if (typeof v !== "string" || !DATE_RE.test(v) || isNaN(new Date(v).getTime())) {
+      problems.push(`${label} must be an ISO date (YYYY-MM-DD) — got ${JSON.stringify(v)}`);
+      return null;
+    }
+    return new Date(v);
+  };
+  const s = check("campaignStart", campaignStart);
+  const e = check("campaignEnd", campaignEnd);
+  if (s && e && s > e) problems.push("campaignStart must be on or before campaignEnd");
+  return problems;
+}
 
 export function businessesDir(root = ROOT) {
   return path.join(root, "businesses");
@@ -82,6 +99,19 @@ export function loadGlobal(root = ROOT) {
       pair[0] <= pair[1];
     if (!ok) problems.push(`safety.${key} must be [min, max] with min <= max`);
   }
+
+  const OPT_NUM = { maxPostVisitsPerRun: 8, journalRetentionDays: 30 };
+  for (const [key, def] of Object.entries(OPT_NUM)) {
+    if (safety[key] === undefined) safety[key] = def;
+    else if (typeof safety[key] !== "number" || safety[key] < 0) {
+      problems.push(`safety.${key} must be a non-negative number`);
+    }
+  }
+  if (safety.pipelineTabs === undefined) safety.pipelineTabs = true;
+  else if (typeof safety.pipelineTabs !== "boolean") {
+    problems.push("safety.pipelineTabs must be a boolean");
+  }
+
   if (problems.length) {
     throw new Error(`config.json is invalid:\n  - ${problems.join("\n  - ")}`);
   }
@@ -97,6 +127,9 @@ export function loadGlobal(root = ROOT) {
       gapBetweenHashtagsMs: safety.gapBetweenHashtagsMs,
       initialDwellMs: safety.initialDwellMs,
       startJitterMs: safety.startJitterMs,
+      maxPostVisitsPerRun: safety.maxPostVisitsPerRun,
+      pipelineTabs: safety.pipelineTabs,
+      journalRetentionDays: safety.journalRetentionDays,
     },
     root,
   };
@@ -146,6 +179,8 @@ export function listBusinesses(root = ROOT) {
         name: raw.name ?? slug,
         hashtags: (raw.hashtags ?? []).map((h) => ({ platform: h.platform, value: h.value })),
         createdAt: raw.createdAt ?? null,
+        campaignStart: raw.campaignStart ?? null,
+        campaignEnd: raw.campaignEnd ?? null,
       });
     } catch {
       /* a malformed business file is skipped rather than breaking every read */
@@ -158,13 +193,16 @@ export function readBusiness(slug, root = ROOT) {
   return listBusinesses(root).find((b) => b.slug === slug) ?? null;
 }
 
-export function writeBusiness({ slug, name, hashtags = [], createdAt }, root = ROOT) {
+export function writeBusiness({ slug, name, hashtags = [], createdAt, campaignStart, campaignEnd }, root = ROOT) {
   if (!SLUG_RE.test(slug)) {
     throw new Error(`invalid slug ${JSON.stringify(slug)} — use lowercase letters, digits, hyphens`);
   }
   if (typeof name !== "string" || !name.trim()) throw new Error("name is required");
   const problems = validateHashtags(hashtags);
   if (problems.length) throw new Error(`invalid hashtags:\n  - ${problems.join("\n  - ")}`);
+
+  const dateProblems = validateCampaignDates(campaignStart, campaignEnd);
+  if (dateProblems.length) throw new Error(`invalid campaign dates:\n  - ${dateProblems.join("\n  - ")}`);
 
   fs.mkdirSync(businessesDir(root), { recursive: true });
   fs.mkdirSync(businessDataDir(slug, root), { recursive: true });
@@ -173,6 +211,8 @@ export function writeBusiness({ slug, name, hashtags = [], createdAt }, root = R
     name: name.trim(),
     createdAt: createdAt ?? existing?.createdAt ?? new Date().toISOString(),
     hashtags: hashtags.map((h) => ({ platform: h.platform, value: h.value })),
+    campaignStart: campaignStart ?? existing?.campaignStart ?? null,
+    campaignEnd: campaignEnd ?? existing?.campaignEnd ?? null,
   };
   fs.writeFileSync(businessFile(slug, root), `${JSON.stringify(payload, null, 2)}\n`);
   return { slug, ...payload };
@@ -211,6 +251,8 @@ export function loadConfig({ business, root = ROOT } = {}) {
     business: chosen.slug,
     campaign: chosen.name,
     hashtags: chosen.hashtags,
+    campaignStart: chosen.campaignStart ?? null,
+    campaignEnd: chosen.campaignEnd ?? null,
     dataDir: businessDataDir(chosen.slug, root),
     root,
   };

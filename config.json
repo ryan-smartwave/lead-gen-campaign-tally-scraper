@@ -20,6 +20,9 @@
       0,
       600000
     ],
-    "pageLoadDelayMs": 6000
+    "pageLoadDelayMs": 6000,
+    "maxPostVisitsPerRun": 8,
+    "pipelineTabs": true,
+    "journalRetentionDays": 30
   }
 }

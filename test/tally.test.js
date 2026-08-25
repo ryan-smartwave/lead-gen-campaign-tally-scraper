@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TallyStore } from "../src/stores/tally.js";
+import { parseWindow } from "../src/utils/freshness.js";
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tally-test-"));
@@ -83,10 +84,93 @@ test("cumulative accumulates across runs and rows land in the csv", () => {
   assert.equal(r2.cumulative, 3);
 
   const csv = fs.readFileSync(path.join(dir, "tally.csv"), "utf8").trim().split("\n");
-  assert.equal(csv[0], "run_at,date,platform,hashtag,new_posts,cumulative_unique,status");
-  assert.equal(csv[1], "2026-08-24T14:16:49.385Z,2026-08-24,facebook,weddingsph,2,2,ok");
-  assert.equal(csv[2], "2026-08-25T14:16:49.385Z,2026-08-25,facebook,weddingsph,1,3,ok");
+  assert.equal(csv[0], "run_at,date,platform,hashtag,new_posts,cumulative_unique,fresh_posts,status");
+  assert.equal(csv[1], "2026-08-24T14:16:49.385Z,2026-08-24,facebook,weddingsph,2,2,0,ok");
+  assert.equal(csv[2], "2026-08-25T14:16:49.385Z,2026-08-25,facebook,weddingsph,1,3,0,ok");
 
   const seen = JSON.parse(fs.readFileSync(path.join(dir, "seen.json"), "utf8"));
   assert.deepEqual(seen["facebook:weddingsph"], ["fb:c1", "fb:c2", "fb:c3"]);
+});
+
+test("record returns freshCount honoring the campaign window", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tally-"));
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "alpha" };
+  const w = parseWindow({ campaignStart: "2026-08-01" });
+  const posts = [
+    { id: "ig:p/1", takenAt: "2026-08-10T00:00:00Z" }, // new + fresh
+    { id: "ig:p/2", takenAt: "2019-01-01T00:00:00Z" }, // new but old
+    { id: "ig:p/3", takenAt: null },                    // new, unknown → fresh
+  ];
+  const r = store.record(h, posts, "2026-08-25T00:00:00Z", w);
+  assert.equal(r.newCount, 3);
+  assert.equal(r.freshCount, 2);
+  assert.equal(r.cumulative, 3);
+});
+
+test("rich fields are persisted to the posts jsonl", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tally-"));
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "beta" };
+  store.record(h, [{ id: "ig:p/9", username: "acme", likeCount: 42, caption: "hi" }], "2026-08-25T00:00:00Z", parseWindow({}));
+  const line = fs.readFileSync(path.join(dir, "posts", "instagram-beta.jsonl"), "utf8").trim();
+  const rec = JSON.parse(line);
+  assert.equal(rec.username, "acme");
+  assert.equal(rec.likeCount, 42);
+});
+
+/**
+ * REGRESSION TEST — do not delete.
+ *
+ * Critical 2 (Task 10 review): the enrichment phase must persist through
+ * `enrichPost`, never `record` — `record` dedups by id and would silently
+ * discard a post already in seen.json, which is exactly what happened before
+ * this method existed. This locks the file-store persistence path in with a
+ * direct unit test, independent of the run-loop mocks in run.test.js.
+ */
+test("enrichPost merges fields into the existing jsonl line", () => {
+  const dir = tmpDir();
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "alpha" };
+  const w = parseWindow({});
+
+  const first = store.record(
+    h,
+    [{ id: "ig:p/1", platform: "instagram", caption: null, username: null, takenAt: null, likeCount: null }],
+    "T1",
+    w,
+  );
+  assert.equal(first.newCount, 1, "the DOM-only sighting is recorded as new");
+
+  store.enrichPost(h, {
+    id: "ig:p/1",
+    caption: "hello",
+    username: "acme",
+    takenAt: "2026-08-10T00:00:00Z",
+    likeCount: 42,
+  });
+
+  const jsonlPath = path.join(dir, "posts", "instagram-alpha.jsonl");
+  const lines = fs.readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const enriched = lines.find((r) => r.id === "ig:p/1");
+  assert.ok(enriched, "the enriched line is still present");
+  assert.equal(enriched.caption, "hello");
+  assert.equal(enriched.username, "acme");
+  assert.equal(enriched.takenAt, "2026-08-10T00:00:00Z");
+  assert.equal(enriched.likeCount, 42);
+  assert.ok(enriched.enrichedAt, "enrichedAt is stamped");
+
+  // Enrichment must not touch dedup memory: still exactly one id, and a
+  // repeat sighting of the same post is still deduped as not-new.
+  store.save();
+  const seen = JSON.parse(fs.readFileSync(path.join(dir, "seen.json"), "utf8"));
+  assert.deepEqual(seen["instagram:alpha"], ["ig:p/1"]);
+  const second = store.record(h, [{ id: "ig:p/1", platform: "instagram" }], "T2", w);
+  assert.equal(second.newCount, 0, "still deduped after enrichment");
+  assert.equal(second.cumulative, 1, "enrichment did not add or remove ids");
+
+  // Defensive: enriching an id that was never recorded is a silent no-op.
+  assert.doesNotThrow(() => store.enrichPost(h, { id: "ig:p/DOESNOTEXIST", caption: "x" }));
+  const linesAfter = fs.readFileSync(jsonlPath, "utf8").trim().split("\n");
+  assert.equal(linesAfter.length, 1, "no phantom line was added for the unmatched id");
 });

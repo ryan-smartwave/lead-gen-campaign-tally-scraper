@@ -12,6 +12,7 @@ import {
   readBusiness,
   validateHashtags,
   slugify,
+  validateCampaignDates,
 } from "../src/config/index.js";
 
 /** A throwaway scraper root with a valid global config.json. */
@@ -134,4 +135,72 @@ test("writeBusiness rejects a bad slug and bad hashtags", () => {
 test("slugify produces usable slugs", () => {
   assert.equal(slugify("Acme Events & Co."), "acme-events-co");
   assert.equal(slugify("  Bolt  Cafe  "), "bolt-cafe");
+});
+
+test("campaign dates: absent is valid", () => {
+  assert.deepEqual(validateCampaignDates(undefined, undefined), []);
+});
+
+test("campaign dates: bad format is rejected", () => {
+  const p = validateCampaignDates("not-a-date", undefined);
+  assert.equal(p.length, 1);
+});
+
+test("campaign dates: start after end is rejected", () => {
+  const p = validateCampaignDates("2026-09-01", "2026-08-01");
+  assert.equal(p.length, 1);
+});
+
+test("campaign dates: valid range passes", () => {
+  assert.deepEqual(validateCampaignDates("2026-08-01", "2026-08-31"), []);
+});
+
+test("loadGlobal exposes the new safety keys with defaults applied", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-"));
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({
+    mcpEndpoint: "http://127.0.0.1:12306/mcp",
+    safety: {
+      maxHashtagsPerRun: 12, maxRunMinutes: 60, scrollsPerHashtag: 5, pageLoadDelayMs: 6000,
+      scrollPauseMs: [1, 2], gapBetweenHashtagsMs: [1, 2], initialDwellMs: [1, 2], startJitterMs: [0, 1],
+    },
+  }));
+  const g = loadGlobal(root);
+  assert.equal(typeof g.safety.maxPostVisitsPerRun, "number");
+  assert.equal(typeof g.safety.pipelineTabs, "boolean");
+  assert.equal(typeof g.safety.journalRetentionDays, "number");
+});
+
+test("campaign dates round-trip and are preserved on undefined", () => {
+  const root = tmpRoot();
+  // Write a business with campaign dates
+  writeBusiness(
+    {
+      slug: "dated-biz",
+      name: "Dated Business",
+      hashtags: [],
+      campaignStart: "2026-08-01",
+      campaignEnd: "2026-08-31",
+    },
+    root,
+  );
+  // Verify dates round-trip through readBusiness
+  const read1 = readBusiness("dated-biz", root);
+  assert.equal(read1.campaignStart, "2026-08-01");
+  assert.equal(read1.campaignEnd, "2026-08-31");
+
+  // Update without dates: undefined should preserve existing values
+  writeBusiness(
+    {
+      slug: "dated-biz",
+      name: "Updated Name",
+      hashtags: [],
+      campaignStart: undefined,
+      campaignEnd: undefined,
+    },
+    root,
+  );
+  const read2 = readBusiness("dated-biz", root);
+  assert.equal(read2.campaignStart, "2026-08-01", "omitted date preserved existing campaignStart");
+  assert.equal(read2.campaignEnd, "2026-08-31", "omitted date preserved existing campaignEnd");
+  assert.equal(read2.name, "Updated Name", "name was updated");
 });

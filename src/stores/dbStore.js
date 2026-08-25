@@ -1,5 +1,6 @@
 import { query, requireDb } from "../db/pool.js";
 import { campaignDay } from "../utils/day.js";
+import { countFresh, toIso } from "../utils/freshness.js";
 
 /**
  * A run store backed entirely by Postgres. Writes no results to disk.
@@ -51,18 +52,30 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       await ready;
     },
 
-    async record(h, posts) {
+    async record(h, posts, _runAt, window) {
       await ready;
       let newCount = 0;
+      const newPosts = [];
 
       for (const post of posts) {
-        // A no-op insert returns no rows, so the returned count IS the number of
-        // genuinely new posts — dedup and persistence in one step.
+        // on conflict ... do update always returns a row, even when nothing was
+        // inserted, so rowCount can no longer tell new from re-sighted. The
+        // xmax = 0 trick can: a freshly inserted row's xmax is 0, an updated
+        // row's is not.
         const res = await query(
           `insert into posts (business, platform, hashtag, post_id, first_run_id, first_seen_at,
-                              url, preview, author, body)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           on conflict (business, platform, hashtag, post_id) do nothing`,
+                              url, preview, author, body, username, caption, image_url,
+                              like_count, comment_count, taken_at, enriched_at)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           on conflict (business, platform, hashtag, post_id) do update set
+             like_count    = coalesce(excluded.like_count, posts.like_count),
+             comment_count = coalesce(excluded.comment_count, posts.comment_count),
+             caption       = coalesce(posts.caption, excluded.caption),
+             username      = coalesce(posts.username, excluded.username),
+             image_url     = coalesce(posts.image_url, excluded.image_url),
+             taken_at      = coalesce(posts.taken_at, excluded.taken_at),
+             enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at)
+           returning (xmax = 0) as inserted`,
           [
             business,
             h.platform,
@@ -74,9 +87,19 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
             post.preview ?? null,
             post.author ?? null,
             post.text ?? null,
+            post.username ?? null,
+            post.caption ?? null,
+            post.imageUrl ?? null,
+            post.likeCount ?? null,
+            post.commentCount ?? null,
+            toIso(post.takenAt),
+            post.enrichedAt ?? null,
           ],
         );
-        if (res.rowCount > 0) newCount += 1;
+        if (res.rows[0]?.inserted) {
+          newCount += 1;
+          newPosts.push(post);
+        }
       }
 
       const counted = await query(
@@ -84,7 +107,52 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
          where business = $1 and platform = $2 and hashtag = $3`,
         [business, h.platform, h.value],
       );
-      return { newCount, cumulative: counted.rows[0]?.n ?? 0 };
+      return {
+        newCount,
+        freshCount: countFresh(newPosts, window),
+        cumulative: counted.rows[0]?.n ?? 0,
+      };
+    },
+
+    // A single enriched post, upserted with the same coalesce logic as
+    // `record` (fills nulls, refreshes engagement counts). Unlike `record`,
+    // this never touches tallies and returns nothing — it exists purely to
+    // land enrichment's extra fields on the row `record` already created.
+    async enrich(h, record) {
+      await ready;
+      await query(
+        `insert into posts (business, platform, hashtag, post_id, first_run_id, first_seen_at,
+                            url, preview, author, body, username, caption, image_url,
+                            like_count, comment_count, taken_at, enriched_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         on conflict (business, platform, hashtag, post_id) do update set
+           like_count    = coalesce(excluded.like_count, posts.like_count),
+           comment_count = coalesce(excluded.comment_count, posts.comment_count),
+           caption       = coalesce(posts.caption, excluded.caption),
+           username      = coalesce(posts.username, excluded.username),
+           image_url     = coalesce(posts.image_url, excluded.image_url),
+           taken_at      = coalesce(posts.taken_at, excluded.taken_at),
+           enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at)`,
+        [
+          business,
+          h.platform,
+          h.value,
+          record.id,
+          runId,
+          runId,
+          record.url ?? null,
+          record.preview ?? null,
+          record.author ?? null,
+          record.text ?? null,
+          record.username ?? null,
+          record.caption ?? null,
+          record.imageUrl ?? null,
+          record.likeCount ?? null,
+          record.commentCount ?? null,
+          toIso(record.takenAt),
+          record.enrichedAt ?? null,
+        ],
+      );
     },
 
     async writeRow(h, _runAt, row) {
@@ -93,15 +161,17 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       // point at.
       await query(
         `insert into tallies (business, run_id, platform, hashtag, campaign_day, visit_seq,
-                              posts_on_page, new_posts, cumulative_unique, status, message)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                              posts_on_page, new_posts, cumulative_unique, status, message,
+                              fresh_posts)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          on conflict (business, run_id, platform, hashtag) do update set
            posts_on_page = excluded.posts_on_page,
            new_posts = excluded.new_posts,
            cumulative_unique = excluded.cumulative_unique,
            status = excluded.status,
            visit_seq = excluded.visit_seq,
-           message = excluded.message`,
+           message = excluded.message,
+           fresh_posts = excluded.fresh_posts`,
         [
           business,
           runId,
@@ -114,6 +184,7 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
           row.cumulative,
           row.status,
           row.message ?? null,
+          row.freshCount ?? 0,
         ],
       );
     },
@@ -190,9 +261,13 @@ export async function ranOnDay(business, day) {
 export async function syncBusinesses(businesses) {
   for (const b of businesses) {
     await query(
-      `insert into businesses (slug, name, created_at, hashtags)
-       values ($1,$2,$3,$4::jsonb)
-       on conflict (slug) do update set name = excluded.name, hashtags = excluded.hashtags`,
+      `insert into businesses (slug, name, created_at, hashtags, campaign_start, campaign_end)
+       values ($1,$2,$3,$4::jsonb,$5,$6)
+       on conflict (slug) do update set
+         name = excluded.name,
+         hashtags = excluded.hashtags,
+         campaign_start = excluded.campaign_start,
+         campaign_end = excluded.campaign_end`,
       [
         b.slug,
         b.name,
@@ -200,6 +275,8 @@ export async function syncBusinesses(businesses) {
         JSON.stringify(
           b.hashtags.map((h) => ({ platform: h.platform, hashtag: h.value ?? h.hashtag })),
         ),
+        b.campaignStart ?? null,
+        b.campaignEnd ?? null,
       ],
     );
   }

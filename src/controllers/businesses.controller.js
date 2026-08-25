@@ -37,7 +37,13 @@ export async function create(req, res) {
   }
 
   try {
-    const business = writeBusiness({ slug, name, hashtags: req.body?.hashtags ?? [] });
+    const business = writeBusiness({
+      slug,
+      name,
+      hashtags: req.body?.hashtags ?? [],
+      campaignStart: req.body?.campaignStart,
+      campaignEnd: req.body?.campaignEnd,
+    });
     await refreshBusinessMirror().catch(() => {});
     res.json({ business });
   } catch (err) {
@@ -57,7 +63,13 @@ export async function update(req, res) {
   const hashtags = Array.isArray(req.body?.hashtags) ? req.body.hashtags : existing.hashtags;
 
   try {
-    const business = writeBusiness({ slug, name, hashtags });
+    const business = writeBusiness({
+      slug,
+      name,
+      hashtags,
+      campaignStart: req.body?.campaignStart,
+      campaignEnd: req.body?.campaignEnd,
+    });
     await refreshBusinessMirror().catch(() => {});
     res.json({ business });
   } catch (err) {
