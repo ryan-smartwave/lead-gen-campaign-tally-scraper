@@ -86,3 +86,35 @@ export async function evalJs(client, code, opts = {}) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function detectCaps(client) {
+  try {
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name.toLowerCase());
+    return {
+      tabs: names.some((n) => n.includes("tab")),
+      screenshot: names.some((n) => n.includes("screenshot")),
+      // resolved tool names for the tab ops, best-effort:
+      names,
+    };
+  } catch {
+    return { tabs: false, screenshot: false, names: [] };
+  }
+}
+
+export async function screenshot(client) {
+  try {
+    const res = await client.callTool({ name: "chrome_screenshot", arguments: {} });
+    const img = (res.content ?? []).find((c) => c.type === "image");
+    return img?.data ? Buffer.from(img.data, "base64") : null;
+  } catch {
+    return null;
+  }
+}
+
+// Open url in a background tab. Returns true on success. Bridge-name tolerant.
+export async function openTab(client, url) {
+  // mcp-chrome exposes navigation; some builds accept an active:false / newWindow flag.
+  await callTool(client, "chrome_navigate", { url, newTab: true });
+  return true;
+}

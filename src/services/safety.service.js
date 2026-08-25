@@ -54,12 +54,13 @@ export async function assertSafe(client, context) {
 
 // Human-like incremental scrolling: partial-viewport steps with randomized pauses,
 // instead of jumping to the bottom (which is an obvious bot signature).
-export async function humanScroll(client, { steps, scrollPauseMs }) {
+export async function humanScroll(client, { steps, scrollPauseMs }, journal) {
   for (let i = 0; i < steps; i++) {
     await evalJs(
       client,
       "window.scrollBy(0, Math.round(window.innerHeight * (0.7 + Math.random() * 0.4))); return true;",
     ).catch(() => {});
+    journal?.log?.("scroll", { detail: { step: i + 1 } });
     await jitter(scrollPauseMs);
   }
 }
