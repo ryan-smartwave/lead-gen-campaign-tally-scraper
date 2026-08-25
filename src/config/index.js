@@ -32,7 +32,7 @@ const HASHTAG_RE = /^[A-Za-z0-9_.]+$/;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PLATFORMS = new Set(["instagram", "facebook"]);
-const PAIR_KEYS = ["scrollPauseMs", "gapBetweenHashtagsMs", "initialDwellMs", "startJitterMs"];
+const PAIR_KEYS = ["scrollPauseMs", "gapBetweenHashtagsMs", "initialDwellMs"];
 const NUM_KEYS = ["maxHashtagsPerRun", "maxRunMinutes", "scrollsPerHashtag", "pageLoadDelayMs"];
 
 export function validateCampaignDates(campaignStart, campaignEnd) {
@@ -126,7 +126,6 @@ export function loadGlobal(root = ROOT) {
       scrollPauseMs: safety.scrollPauseMs,
       gapBetweenHashtagsMs: safety.gapBetweenHashtagsMs,
       initialDwellMs: safety.initialDwellMs,
-      startJitterMs: safety.startJitterMs,
       maxPostVisitsPerRun: safety.maxPostVisitsPerRun,
       pipelineTabs: safety.pipelineTabs,
       journalRetentionDays: safety.journalRetentionDays,

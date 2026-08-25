@@ -30,26 +30,11 @@ function tmpRoot() {
         scrollPauseMs: [3000, 9000],
         gapBetweenHashtagsMs: [180000, 420000],
         initialDwellMs: [2000, 5000],
-        startJitterMs: [0, 600000],
       },
     }),
   );
   return root;
 }
-
-test("safety.startJitterMs is required and reaches the run config", () => {
-  const withJitter = tmpRoot();
-  assert.deepEqual(loadGlobal(withJitter).safety.startJitterMs, [0, 600000]);
-
-  // Remove the key: the config must be rejected loudly, not silently unjittered —
-  // a fixed daily start time is itself a bot signature (ANTIBAN.md §5–6).
-  const root = tmpRoot();
-  const file = path.join(root, "config.json");
-  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-  delete raw.safety.startJitterMs;
-  fs.writeFileSync(file, JSON.stringify(raw));
-  assert.throws(() => loadGlobal(root), /startJitterMs/);
-});
 
 test("businesses round-trip through disk", () => {
   const root = tmpRoot();
@@ -161,7 +146,7 @@ test("loadGlobal exposes the new safety keys with defaults applied", () => {
     mcpEndpoint: "http://127.0.0.1:12306/mcp",
     safety: {
       maxHashtagsPerRun: 12, maxRunMinutes: 60, scrollsPerHashtag: 5, pageLoadDelayMs: 6000,
-      scrollPauseMs: [1, 2], gapBetweenHashtagsMs: [1, 2], initialDwellMs: [1, 2], startJitterMs: [0, 1],
+      scrollPauseMs: [1, 2], gapBetweenHashtagsMs: [1, 2], initialDwellMs: [1, 2],
     },
   }));
   const g = loadGlobal(root);

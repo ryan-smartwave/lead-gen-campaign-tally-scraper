@@ -218,7 +218,6 @@ export async function selectTargets(hashtags, cap, store) {
  * @param {(e:object)=>void} [opts.onEvent]
  * @param {AbortSignal} [opts.signal] cooperative stop between hashtags
  * @param {'web'|'cli'} [opts.source]
- * @param {boolean} [opts.startNow]  skip the start jitter (supervised CLI runs only)
  * @param {object} [opts.deps]       test seams: {connect, disconnect, collect, enrichPost}
  */
 export async function run({
@@ -228,7 +227,6 @@ export async function run({
   signal,
   source = "cli",
   runId,
-  startNow = false,
   deps = {},
 } = {}) {
   const cx = deps.connect ?? connect;
@@ -293,19 +291,6 @@ export async function run({
   });
 
   try {
-    // ANTIBAN.md §6: firing at the same clock minute daily is itself a fixed
-    // rhythm, so every run holds back a random beat before touching anything.
-    // Announced as a `waiting` event so watchers see a countdown, not a hang.
-    if (!startNow && S.startJitterMs?.[1] > 0) {
-      const waitMs = rand(S.startJitterMs[0], S.startJitterMs[1]);
-      emit("waiting", {
-        seconds: Math.round(waitMs / 1000),
-        reason: "start_jitter",
-        next: asTarget(targets[0]),
-      });
-      await delay(waitMs, undefined, { signal }).catch(() => {});
-    }
-
     client = await cx(config.mcpEndpoint, {
       onEvent: (e) => emit("connect_retry", e),
     });
@@ -313,7 +298,6 @@ export async function run({
     caps = await detectCaps(client).catch(() => ({ tabs: false, screenshot: false }));
     if (!S.pipelineTabs) caps.tabs = false;
 
-    // Started after the jitter: the budget measures scraping, not the wait.
     const deadline = Date.now() + S.maxRunMinutes * 60_000;
 
     for (let i = 0; i < targets.length; i++) {

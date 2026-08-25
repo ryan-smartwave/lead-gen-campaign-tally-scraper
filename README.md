@@ -93,12 +93,9 @@ that sat a day out has a gap in its daily series (the cumulative curve is
 unaffected). Preflight reports a `coverage` warning whenever this rotation is
 active.
 
-**Runs start on a randomized delay.** `safety.startJitterMs` (`[min, max]`,
-default 0–10 minutes) holds back the first page visit by a random wait, so
-triggering runs at the same clock time every day cannot produce a fixed rhythm
-(ANTIBAN.md §5–6). The wait is announced as a `waiting` event, so the UI shows a
-countdown rather than a hang. `npm run run-once -- --now` skips it for a
-supervised terminal run — a human already present is a randomized start time.
+**Runs start immediately.** The first hashtag is visited as soon as the run
+connects; the only enforced waits are the randomized gaps between hashtags
+(`gapBetweenHashtagsMs`).
 
 **Safety configuration keys** (in `config.json`, file-only):
 - `maxHashtagsPerRun` (default 12): cap on hashtags visited per run
@@ -107,7 +104,6 @@ supervised terminal run — a human already present is a randomized start time.
 - `scrollPauseMs` (`[min, max]`, default 3000–9000): jitter between scroll steps
 - `gapBetweenHashtagsMs` (`[min, max]`, default 3–7 minutes): idle gap between hashtags
 - `initialDwellMs` (`[min, max]`, default 2–5 seconds): dwell before first scroll
-- `startJitterMs` (`[min, max]`, default 0–10 minutes): delay before run begins
 - `pageLoadDelayMs` (default 6000): wait after navigation before scraping
 - `maxPostVisitsPerRun` (default 8): cap on individual post enrichment visits per run
 - `pipelineTabs` (default true): enable single-tab pre-navigation during hashtag gaps
