@@ -481,3 +481,107 @@ test("run passes rich records through and reports freshCount in hashtag_done", a
   assert.equal(done.newCount, 2);
   assert.equal(done.freshCount, 1);
 });
+
+test("enrichment visits queued IG records up to the cap and persists via store.enrich", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }], { maxPostVisitsPerRun: 2 });
+  const enrichCalls = [];
+  const store = {
+    kind: "test",
+    async record(h, posts) {
+      return { newCount: posts.length, freshCount: posts.length, cumulative: posts.length };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 0;
+    },
+    async finish() {},
+    async enrich(h, record) {
+      enrichCalls.push({ hashtag: h, record });
+    },
+  };
+  const enrichPostCalls = [];
+
+  const result = await run({
+    config,
+    store,
+    deps: {
+      connect: async () => ({ fake: true, listTools: async () => ({ tools: [] }) }),
+      disconnect: async () => {},
+      // Three IG records missing fields, cap is 2 — only 2 should be visited.
+      collect: async () => [
+        { id: "ig:p/1", platform: "instagram", takenAt: null, caption: null, username: null },
+        { id: "ig:p/2", platform: "instagram", takenAt: null, caption: null, username: null },
+        { id: "ig:p/3", platform: "instagram", takenAt: null, caption: null, username: null },
+      ],
+      enrichPost: async (_client, rec) => {
+        enrichPostCalls.push(rec.id);
+        return {
+          ...rec,
+          caption: "hi",
+          username: "someone",
+          takenAt: "2026-08-10T00:00:00Z",
+          enrichedAt: "2026-08-25T00:00:00Z",
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(enrichPostCalls.length, 2, "capped at maxPostVisitsPerRun");
+  assert.equal(enrichCalls.length, 2, "each enriched post is persisted via store.enrich, not store.record");
+  for (const call of enrichCalls) {
+    assert.equal(call.record.caption, "hi");
+    assert.equal(call.record.username, "someone");
+  }
+});
+
+test("an abort blocks the enrichment phase entirely (abort-never-retry)", async () => {
+  const config = fastConfig(
+    [
+      { platform: "instagram", value: "alpha" },
+      { platform: "instagram", value: "beta" },
+    ],
+    { maxPostVisitsPerRun: 5 },
+  );
+  const enrichCalls = [];
+  const store = {
+    kind: "test",
+    async record(h, posts) {
+      return { newCount: posts.length, freshCount: posts.length, cumulative: posts.length };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 0;
+    },
+    async finish() {},
+    async enrich(h, record) {
+      enrichCalls.push(record);
+    },
+  };
+  let calls = 0;
+
+  const result = await run({
+    config,
+    store,
+    deps: {
+      connect: async () => ({ fake: true, listTools: async () => ({ tools: [] }) }),
+      disconnect: async () => {},
+      collect: async () => {
+        calls += 1;
+        // First hashtag queues an enrichable record; the second is where the
+        // checkpoint fires, aborting the whole run.
+        if (calls === 1) {
+          return [{ id: "ig:p/1", platform: "instagram", takenAt: null, caption: null, username: null }];
+        }
+        throw new BlockError("checkpoint at https://x/checkpoint (during load)", {
+          reason: "checkpoint",
+          url: "https://x/checkpoint",
+        });
+      },
+      enrichPost: async (_client, rec) => ({ ...rec, caption: "should-not-be-visited" }),
+    },
+  });
+
+  assert.equal(result.status, "aborted");
+  assert.equal(enrichCalls.length, 0, "enrichment must never run after a BlockError abort");
+});

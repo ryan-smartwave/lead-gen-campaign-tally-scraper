@@ -219,7 +219,7 @@ export async function selectTargets(hashtags, cap, store) {
  * @param {AbortSignal} [opts.signal] cooperative stop between hashtags
  * @param {'web'|'cli'} [opts.source]
  * @param {boolean} [opts.startNow]  skip the start jitter (supervised CLI runs only)
- * @param {object} [opts.deps]       test seams: {connect, disconnect, collect}
+ * @param {object} [opts.deps]       test seams: {connect, disconnect, collect, enrichPost}
  */
 export async function run({
   config,
@@ -234,6 +234,7 @@ export async function run({
   const cx = deps.connect ?? connect;
   const dx = deps.disconnect ?? disconnect;
   const co = deps.collect ?? collect;
+  const ep = deps.enrichPost ?? enrichPost;
 
   const S = config.safety;
   // The caller may supply the id so its store, its ledger and these events all
@@ -450,23 +451,31 @@ export async function run({
 
     // Enrichment phase: visit individual post pages for IG records still
     // missing fields, up to the per-run visit budget, respecting the
-    // deadline and the abort signal like the main loop does.
-    if (client && enrichQueue.length && !signal?.aborted && Date.now() <= deadline) {
-      const enrichDeps = {
-        navigate,
-        evalJs,
-        assertSafe,
-        sleep,
-        pageLoadDelayMs: S.pageLoadDelayMs,
-        dwellMs: rand(S.initialDwellMs[0], S.initialDwellMs[1]),
-        journal,
-      };
+    // deadline and the abort signal like the main loop does. Gated on
+    // status === "complete" — abort-never-retry (ANTIBAN.md §7) means a
+    // BlockError or a spent time budget in the main loop must never be
+    // followed by MORE navigation, even to a different URL.
+    if (client && enrichQueue.length && status === "complete" && !signal?.aborted && Date.now() <= deadline) {
       const visitCap = S.maxPostVisitsPerRun ?? 0;
       for (const rec of enrichQueue.slice(0, visitCap)) {
         if (signal?.aborted || Date.now() > deadline) break;
+        // Resampled every visit, like the gap below — a fixed dwell across
+        // every post page is itself a fixed-interval bot signature.
+        const enrichDeps = {
+          navigate,
+          evalJs,
+          assertSafe,
+          sleep,
+          pageLoadDelayMs: S.pageLoadDelayMs,
+          dwellMs: rand(S.initialDwellMs[0], S.initialDwellMs[1]),
+          journal,
+        };
         try {
-          const enriched = await enrichPost(client, rec, enrichDeps);
-          await results.record(rec.hashtag, [enriched], runAt, window); // upsert fills fields
+          const enriched = await ep(client, rec, enrichDeps);
+          // NOT results.record: a dedup-by-id store already saw this post's
+          // id from the main loop and would silently drop a second `record`
+          // call. `enrich` merges the extra fields into what's already there.
+          await results.enrich?.(rec.hashtag, enriched, runAt);
         } catch (err) {
           if (err instanceof BlockError) {
             status = "aborted";
@@ -487,6 +496,8 @@ export async function run({
               /* swallow */
             }
             emit("danger", {
+              platform: rec.hashtag.platform,
+              hashtag: rec.hashtag.value,
               reason: abortReason,
               url: err.url ?? null,
               message: err.message,

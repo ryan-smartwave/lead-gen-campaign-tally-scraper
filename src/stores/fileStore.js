@@ -20,6 +20,12 @@ import { TallyStore } from "./tally.js";
  *   lastVisits()                   -> { "platform:value": lastRunAt } (optional;
  *                                     feeds least-recently-scraped rotation when
  *                                     a business exceeds maxHashtagsPerRun)
+ *   enrich(hashtag, record, runAt) -> void        (optional; merges a single
+ *                                     enriched post's fields into what was
+ *                                     already recorded for it — NOT the same
+ *                                     as calling `record` again, which a
+ *                                     dedup-by-id store would treat as
+ *                                     already-seen and drop)
  */
 
 /** Files under `dataDir`: tally.csv, seen.json, posts/*.jsonl. Used by the CLI. */
@@ -32,6 +38,13 @@ export function createFileStore(dataDir) {
     kind: "file",
     async record(h, posts, runAt, window) {
       return store.record(h, posts, runAt, window);
+    },
+    // Merges an enrichment result into the post already recorded for it.
+    // Deliberately NOT `record` — TallyStore.record only writes posts not yet
+    // in seen.json, and the post is already there from the first sighting, so
+    // routing enrichment through `record` silently discards it.
+    async enrich(h, record) {
+      store.enrichPost(h, record);
     },
     async writeRow(h, runAt, row) {
       // tally.csv has a fixed 8-column shape (added fresh_posts); postsOnPage has no column there

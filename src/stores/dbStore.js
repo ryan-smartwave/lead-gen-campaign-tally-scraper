@@ -114,6 +114,47 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       };
     },
 
+    // A single enriched post, upserted with the same coalesce logic as
+    // `record` (fills nulls, refreshes engagement counts). Unlike `record`,
+    // this never touches tallies and returns nothing — it exists purely to
+    // land enrichment's extra fields on the row `record` already created.
+    async enrich(h, record) {
+      await ready;
+      await query(
+        `insert into posts (business, platform, hashtag, post_id, first_run_id, first_seen_at,
+                            url, preview, author, body, username, caption, image_url,
+                            like_count, comment_count, taken_at, enriched_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         on conflict (business, platform, hashtag, post_id) do update set
+           like_count    = coalesce(excluded.like_count, posts.like_count),
+           comment_count = coalesce(excluded.comment_count, posts.comment_count),
+           caption       = coalesce(posts.caption, excluded.caption),
+           username      = coalesce(posts.username, excluded.username),
+           image_url     = coalesce(posts.image_url, excluded.image_url),
+           taken_at      = coalesce(posts.taken_at, excluded.taken_at),
+           enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at)`,
+        [
+          business,
+          h.platform,
+          h.value,
+          record.id,
+          runId,
+          runId,
+          record.url ?? null,
+          record.preview ?? null,
+          record.author ?? null,
+          record.text ?? null,
+          record.username ?? null,
+          record.caption ?? null,
+          record.imageUrl ?? null,
+          record.likeCount ?? null,
+          record.commentCount ?? null,
+          record.takenAt ?? null,
+          record.enrichedAt ?? null,
+        ],
+      );
+    },
+
     async writeRow(h, _runAt, row) {
       await ready;
       // Always this store's run id: the row the posts and the foreign key

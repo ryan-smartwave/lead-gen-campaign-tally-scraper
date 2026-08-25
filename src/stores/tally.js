@@ -69,6 +69,46 @@ export class TallyStore {
     return out;
   }
 
+  // Merges enrichment results into an already-recorded post line in
+  // posts/<platform>-<value>.jsonl. Deliberately does NOT touch seen.json or
+  // any count: the post was already counted by `record`, enrichment only
+  // fills in detail it didn't have yet. A missing file or unmatched id is a
+  // silent no-op — enrichment is best-effort and must never throw.
+  enrichPost(h, record) {
+    const file = path.join(this.postsDir, `${h.platform}-${h.value}.jsonl`);
+    let lines;
+    try {
+      lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+    } catch {
+      return;
+    }
+    let changed = false;
+    const merged = lines.map((line) => {
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        return line;
+      }
+      if (row.id !== record.id) return line;
+      changed = true;
+      const next = { ...row };
+      // Fill fields the DOM-only sighting left empty.
+      for (const k of ["caption", "username", "takenAt", "imageUrl"]) {
+        if (next[k] == null && record[k] != null) next[k] = record[k];
+      }
+      // Engagement counts are refreshed, not just filled — a later visit's
+      // like/comment count is more current than the first sighting's.
+      for (const k of ["likeCount", "commentCount"]) {
+        if (record[k] != null) next[k] = record[k];
+      }
+      if (record.enrichedAt != null) next.enrichedAt = record.enrichedAt;
+      return JSON.stringify(next);
+    });
+    if (!changed) return;
+    fs.writeFileSync(file, merged.join("\n") + "\n");
+  }
+
   writeRow(h, runAt, newCount, cumulative, status, freshCount = 0) {
     const date = runAt.slice(0, 10);
     const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${freshCount},${status}\n`;
