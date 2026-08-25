@@ -111,10 +111,3 @@ export async function screenshot(client) {
     return null;
   }
 }
-
-// Open url in a background tab. Returns true on success. Bridge-name tolerant.
-export async function openTab(client, url) {
-  // mcp-chrome exposes navigation; some builds accept an active:false / newWindow flag.
-  await callTool(client, "chrome_navigate", { url, newTab: true });
-  return true;
-}

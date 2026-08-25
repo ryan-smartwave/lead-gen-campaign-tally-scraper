@@ -585,3 +585,49 @@ test("an abort blocks the enrichment phase entirely (abort-never-retry)", async 
   assert.equal(result.status, "aborted");
   assert.equal(enrichCalls.length, 0, "enrichment must never run after a BlockError abort");
 });
+
+/**
+ * FIX 3 (IMPORTANT): the spec's error table says a budget overrun during
+ * enrichment must report status "budget_stopped", not silently stay
+ * "complete". The main loop already handled this; enrichment did not.
+ */
+test("the time budget expiring during enrichment marks the run budget_stopped", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }], {
+    maxPostVisitsPerRun: 5,
+    maxRunMinutes: 12 / 60_000, // ~12ms deadline
+  });
+  const enrichCalls = [];
+  const store = {
+    kind: "test",
+    async record(h, posts) {
+      return { newCount: posts.length, freshCount: posts.length, cumulative: posts.length };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 0;
+    },
+    async finish() {},
+    async enrich(h, record) {
+      enrichCalls.push(record);
+    },
+  };
+
+  const result = await run({
+    config,
+    store,
+    deps: {
+      connect: async () => ({ fake: true, listTools: async () => ({ tools: [] }) }),
+      disconnect: async () => {},
+      // An artificial delay so the ~12ms deadline has passed by the time the
+      // main loop finishes its one hashtag and enrichment would begin.
+      collect: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return [{ id: "ig:p/1", platform: "instagram", takenAt: null, caption: null, username: null }];
+      },
+      enrichPost: async (_client, rec) => ({ ...rec, caption: "should-not-run" }),
+    },
+  });
+
+  assert.equal(result.status, "budget_stopped");
+  assert.equal(enrichCalls.length, 0, "deadline already passed, so enrichment never visits a post");
+});

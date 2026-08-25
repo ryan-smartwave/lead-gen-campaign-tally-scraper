@@ -455,10 +455,19 @@ export async function run({
     // status === "complete" — abort-never-retry (ANTIBAN.md §7) means a
     // BlockError or a spent time budget in the main loop must never be
     // followed by MORE navigation, even to a different URL.
-    if (client && enrichQueue.length && status === "complete" && !signal?.aborted && Date.now() <= deadline) {
+    if (client && enrichQueue.length && status === "complete" && !signal?.aborted && Date.now() > deadline) {
+      // The budget ran out before enrichment could even start — same
+      // outcome, per the spec's error table, as running out mid-loop below.
+      status = "budget_stopped";
+    }
+    if (client && enrichQueue.length && status === "complete" && !signal?.aborted) {
       const visitCap = S.maxPostVisitsPerRun ?? 0;
       for (const rec of enrichQueue.slice(0, visitCap)) {
-        if (signal?.aborted || Date.now() > deadline) break;
+        if (signal?.aborted) break;
+        if (Date.now() > deadline) {
+          status = "budget_stopped";
+          break;
+        }
         // Resampled every visit, like the gap below — a fixed dwell across
         // every post page is itself a fixed-interval bot signature.
         const enrichDeps = {

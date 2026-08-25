@@ -20,6 +20,14 @@ export function parseWindow({ campaignStart, campaignEnd } = {}) {
   return { start: toDate(campaignStart), end: toDate(campaignEnd) };
 }
 
+// Coerces the same accepted shapes (ISO string, epoch seconds, epoch ms, Date,
+// null) to an ISO string suitable for binding to a `timestamptz` column. A
+// raw epoch-seconds number bound directly to Postgres throws "date/time field
+// value out of range", so every store write goes through this first.
+export function toIso(v) {
+  return toDate(v)?.toISOString() ?? null;
+}
+
 export function isFresh(takenAt, window = { start: null, end: null }) {
   const d = toDate(takenAt);
   if (!d) return true; // unknown age counts — never shrink counts silently

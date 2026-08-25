@@ -1,6 +1,6 @@
 import { query, requireDb } from "../db/pool.js";
 import { campaignDay } from "../utils/day.js";
-import { countFresh } from "../utils/freshness.js";
+import { countFresh, toIso } from "../utils/freshness.js";
 
 /**
  * A run store backed entirely by Postgres. Writes no results to disk.
@@ -92,7 +92,7 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
             post.imageUrl ?? null,
             post.likeCount ?? null,
             post.commentCount ?? null,
-            post.takenAt ?? null,
+            toIso(post.takenAt),
             post.enrichedAt ?? null,
           ],
         );
@@ -149,7 +149,7 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
           record.imageUrl ?? null,
           record.likeCount ?? null,
           record.commentCount ?? null,
-          record.takenAt ?? null,
+          toIso(record.takenAt),
           record.enrichedAt ?? null,
         ],
       );
@@ -261,9 +261,13 @@ export async function ranOnDay(business, day) {
 export async function syncBusinesses(businesses) {
   for (const b of businesses) {
     await query(
-      `insert into businesses (slug, name, created_at, hashtags)
-       values ($1,$2,$3,$4::jsonb)
-       on conflict (slug) do update set name = excluded.name, hashtags = excluded.hashtags`,
+      `insert into businesses (slug, name, created_at, hashtags, campaign_start, campaign_end)
+       values ($1,$2,$3,$4::jsonb,$5,$6)
+       on conflict (slug) do update set
+         name = excluded.name,
+         hashtags = excluded.hashtags,
+         campaign_start = excluded.campaign_start,
+         campaign_end = excluded.campaign_end`,
       [
         b.slug,
         b.name,
@@ -271,6 +275,8 @@ export async function syncBusinesses(businesses) {
         JSON.stringify(
           b.hashtags.map((h) => ({ platform: h.platform, hashtag: h.value ?? h.hashtag })),
         ),
+        b.campaignStart ?? null,
+        b.campaignEnd ?? null,
       ],
     );
   }
