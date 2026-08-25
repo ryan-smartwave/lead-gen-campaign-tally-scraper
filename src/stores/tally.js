@@ -102,7 +102,9 @@ export class TallyStore {
       for (const k of ["likeCount", "commentCount"]) {
         if (record[k] != null) next[k] = record[k];
       }
-      if (record.enrichedAt != null) next.enrichedAt = record.enrichedAt;
+      // Always stamped: this store call IS the enrichment event, so it marks
+      // when it happened even if the caller's record forgot to.
+      next.enrichedAt = record.enrichedAt ?? new Date().toISOString();
       return JSON.stringify(next);
     });
     if (!changed) return;

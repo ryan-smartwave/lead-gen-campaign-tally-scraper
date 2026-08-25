@@ -118,3 +118,59 @@ test("rich fields are persisted to the posts jsonl", () => {
   assert.equal(rec.username, "acme");
   assert.equal(rec.likeCount, 42);
 });
+
+/**
+ * REGRESSION TEST — do not delete.
+ *
+ * Critical 2 (Task 10 review): the enrichment phase must persist through
+ * `enrichPost`, never `record` — `record` dedups by id and would silently
+ * discard a post already in seen.json, which is exactly what happened before
+ * this method existed. This locks the file-store persistence path in with a
+ * direct unit test, independent of the run-loop mocks in run.test.js.
+ */
+test("enrichPost merges fields into the existing jsonl line", () => {
+  const dir = tmpDir();
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "alpha" };
+  const w = parseWindow({});
+
+  const first = store.record(
+    h,
+    [{ id: "ig:p/1", platform: "instagram", caption: null, username: null, takenAt: null, likeCount: null }],
+    "T1",
+    w,
+  );
+  assert.equal(first.newCount, 1, "the DOM-only sighting is recorded as new");
+
+  store.enrichPost(h, {
+    id: "ig:p/1",
+    caption: "hello",
+    username: "acme",
+    takenAt: "2026-08-10T00:00:00Z",
+    likeCount: 42,
+  });
+
+  const jsonlPath = path.join(dir, "posts", "instagram-alpha.jsonl");
+  const lines = fs.readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const enriched = lines.find((r) => r.id === "ig:p/1");
+  assert.ok(enriched, "the enriched line is still present");
+  assert.equal(enriched.caption, "hello");
+  assert.equal(enriched.username, "acme");
+  assert.equal(enriched.takenAt, "2026-08-10T00:00:00Z");
+  assert.equal(enriched.likeCount, 42);
+  assert.ok(enriched.enrichedAt, "enrichedAt is stamped");
+
+  // Enrichment must not touch dedup memory: still exactly one id, and a
+  // repeat sighting of the same post is still deduped as not-new.
+  store.save();
+  const seen = JSON.parse(fs.readFileSync(path.join(dir, "seen.json"), "utf8"));
+  assert.deepEqual(seen["instagram:alpha"], ["ig:p/1"]);
+  const second = store.record(h, [{ id: "ig:p/1", platform: "instagram" }], "T2", w);
+  assert.equal(second.newCount, 0, "still deduped after enrichment");
+  assert.equal(second.cumulative, 1, "enrichment did not add or remove ids");
+
+  // Defensive: enriching an id that was never recorded is a silent no-op.
+  assert.doesNotThrow(() => store.enrichPost(h, { id: "ig:p/DOESNOTEXIST", caption: "x" }));
+  const linesAfter = fs.readFileSync(jsonlPath, "utf8").trim().split("\n");
+  assert.equal(linesAfter.length, 1, "no phantom line was added for the unmatched id");
+});
