@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { countFresh } from "../utils/freshness.js";
 
 // Cumulative, crash-resilient tally store:
 //   seen.json          — { "<platform>:<value>": [postId, ...] } all-time unique IDs per hashtag
@@ -19,7 +20,7 @@ export class TallyStore {
     if (!fs.existsSync(this.csvPath)) {
       fs.writeFileSync(
         this.csvPath,
-        "run_at,date,platform,hashtag,new_posts,cumulative_unique,status\n",
+        "run_at,date,platform,hashtag,new_posts,cumulative_unique,fresh_posts,status\n",
       );
     }
   }
@@ -28,8 +29,8 @@ export class TallyStore {
     return `${h.platform}:${h.value}`;
   }
 
-  // Records freshly-seen posts, returns { newCount, cumulative }.
-  record(h, posts, runAt) {
+  // Records freshly-seen posts, returns { newCount, freshCount, cumulative }.
+  record(h, posts, runAt, window = { start: null, end: null }) {
     const key = TallyStore.key(h);
     const seenIds = new Set(this.seen[key] ?? []);
     const fresh = posts.filter((p) => !seenIds.has(p.id));
@@ -43,7 +44,8 @@ export class TallyStore {
           .join("\n") + "\n";
       fs.appendFileSync(path.join(this.postsDir, `${h.platform}-${h.value}.jsonl`), lines);
     }
-    return { newCount: fresh.length, cumulative: seenIds.size };
+    const freshCount = countFresh(fresh, window);
+    return { newCount: fresh.length, freshCount, cumulative: seenIds.size };
   }
 
   // When was each hashtag last visited? Read from tally.csv rather than kept in
@@ -67,9 +69,9 @@ export class TallyStore {
     return out;
   }
 
-  writeRow(h, runAt, newCount, cumulative, status) {
+  writeRow(h, runAt, newCount, cumulative, status, freshCount = 0) {
     const date = runAt.slice(0, 10);
-    const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${status}\n`;
+    const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${freshCount},${status}\n`;
     fs.appendFileSync(this.csvPath, row);
   }
 

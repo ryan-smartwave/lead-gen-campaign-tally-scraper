@@ -30,13 +30,13 @@ export function createFileStore(dataDir) {
 
   return {
     kind: "file",
-    async record(h, posts, runAt) {
-      return store.record(h, posts, runAt);
+    async record(h, posts, runAt, window) {
+      return store.record(h, posts, runAt, window);
     },
     async writeRow(h, runAt, row) {
-      // tally.csv has a fixed 7-column shape; postsOnPage has no column there
+      // tally.csv has a fixed 8-column shape (added fresh_posts); postsOnPage has no column there
       // and is deliberately not appended, to keep the format stable.
-      store.writeRow(h, runAt, row.newCount, row.cumulative, row.status);
+      store.writeRow(h, runAt, row.newCount, row.cumulative, row.status, row.freshCount);
       store.save();
     },
     async seenCount(h) {

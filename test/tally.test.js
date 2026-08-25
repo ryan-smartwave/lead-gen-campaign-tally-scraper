@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TallyStore } from "../src/stores/tally.js";
+import { parseWindow } from "../src/utils/freshness.js";
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tally-test-"));
@@ -83,10 +84,37 @@ test("cumulative accumulates across runs and rows land in the csv", () => {
   assert.equal(r2.cumulative, 3);
 
   const csv = fs.readFileSync(path.join(dir, "tally.csv"), "utf8").trim().split("\n");
-  assert.equal(csv[0], "run_at,date,platform,hashtag,new_posts,cumulative_unique,status");
-  assert.equal(csv[1], "2026-08-24T14:16:49.385Z,2026-08-24,facebook,weddingsph,2,2,ok");
-  assert.equal(csv[2], "2026-08-25T14:16:49.385Z,2026-08-25,facebook,weddingsph,1,3,ok");
+  assert.equal(csv[0], "run_at,date,platform,hashtag,new_posts,cumulative_unique,fresh_posts,status");
+  assert.equal(csv[1], "2026-08-24T14:16:49.385Z,2026-08-24,facebook,weddingsph,2,2,0,ok");
+  assert.equal(csv[2], "2026-08-25T14:16:49.385Z,2026-08-25,facebook,weddingsph,1,3,0,ok");
 
   const seen = JSON.parse(fs.readFileSync(path.join(dir, "seen.json"), "utf8"));
   assert.deepEqual(seen["facebook:weddingsph"], ["fb:c1", "fb:c2", "fb:c3"]);
+});
+
+test("record returns freshCount honoring the campaign window", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tally-"));
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "alpha" };
+  const w = parseWindow({ campaignStart: "2026-08-01" });
+  const posts = [
+    { id: "ig:p/1", takenAt: "2026-08-10T00:00:00Z" }, // new + fresh
+    { id: "ig:p/2", takenAt: "2019-01-01T00:00:00Z" }, // new but old
+    { id: "ig:p/3", takenAt: null },                    // new, unknown → fresh
+  ];
+  const r = store.record(h, posts, "2026-08-25T00:00:00Z", w);
+  assert.equal(r.newCount, 3);
+  assert.equal(r.freshCount, 2);
+  assert.equal(r.cumulative, 3);
+});
+
+test("rich fields are persisted to the posts jsonl", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tally-"));
+  const store = new TallyStore(dir);
+  const h = { platform: "instagram", value: "beta" };
+  store.record(h, [{ id: "ig:p/9", username: "acme", likeCount: 42, caption: "hi" }], "2026-08-25T00:00:00Z", parseWindow({}));
+  const line = fs.readFileSync(path.join(dir, "posts", "instagram-beta.jsonl"), "utf8").trim();
+  const rec = JSON.parse(line);
+  assert.equal(rec.username, "acme");
+  assert.equal(rec.likeCount, 42);
 });
