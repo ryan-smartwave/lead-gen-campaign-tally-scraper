@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { connect, disconnect, evalJs, sleep } from "./mcp.service.js";
+import { connect, disconnect, evalJs, sleep, detectCaps, screenshot as mcpScreenshot } from "./mcp.service.js";
 import { IG_EXTRACT, FB_EXTRACT } from "./extract.service.js";
+import { IG_CAPTURE_INSTALL, IG_CAPTURE_HARVEST, normalizeCaptured, mergeRecords } from "./capture.service.js";
+import { selectForEnrichment, enrichPost } from "./enrich.service.js";
+import { createJournal } from "./journal.service.js";
+import { captureIncident } from "./incident.service.js";
+import { planNext } from "./pipeline.service.js";
+import { parseWindow } from "../utils/freshness.js";
 import { createFileStore } from "../stores/fileStore.js";
 import {
   rand,
@@ -111,15 +117,31 @@ export function releaseLock(lockPath) {
 
 /* ---------------- collection ---------------- */
 
-export async function collect(client, h, safety) {
-  await navigate(client, hashtagUrl(h));
+export async function collect(client, h, safety, ctx = {}) {
+  const { journal, preloaded } = ctx;
+  if (!preloaded) {
+    await navigate(client, hashtagUrl(h));
+    journal?.log?.("navigate", { platform: h.platform, hashtag: h.value });
+  } else {
+    // The page is already loaded in the one active tab from the preceding
+    // gap's preload — nothing to navigate, just note the handoff.
+    journal?.log?.("tab_switch", { platform: h.platform, hashtag: h.value });
+  }
   await sleep(safety.pageLoadDelayMs);
   await assertSafe(client, `${h.platform}#${h.value} load`);
+
+  if (h.platform === "instagram") {
+    // Idempotent (guarded by `if(!window.__swCapture)`), so calling it again
+    // for an already-preloaded page is harmless.
+    await evalJs(client, IG_CAPTURE_INSTALL).catch(() => {});
+  }
   await jitter(safety.initialDwellMs);
-  await humanScroll(client, {
-    steps: safety.scrollsPerHashtag,
-    scrollPauseMs: safety.scrollPauseMs,
-  });
+  journal?.log?.("dwell", { platform: h.platform, hashtag: h.value });
+  await humanScroll(
+    client,
+    { steps: safety.scrollsPerHashtag, scrollPauseMs: safety.scrollPauseMs },
+    journal,
+  );
   await assertSafe(client, `${h.platform}#${h.value} after-scroll`);
 
   const res = await evalJs(client, h.platform === "instagram" ? IG_EXTRACT : FB_EXTRACT);
@@ -129,6 +151,27 @@ export async function collect(client, h, safety) {
       url: hashtagUrl(h),
     });
   }
+
+  if (h.platform === "instagram") {
+    let captured = [];
+    try {
+      const raw = await evalJs(client, IG_CAPTURE_HARVEST);
+      captured = normalizeCaptured(raw);
+    } catch {
+      /* degrade to DOM-only */
+    }
+    journal?.log?.("capture_harvest", {
+      platform: h.platform,
+      hashtag: h.value,
+      detail: { records: captured.length },
+    });
+    return mergeRecords(res.posts, captured);
+  }
+  journal?.log?.("extract", {
+    platform: h.platform,
+    hashtag: h.value,
+    detail: { posts: res.posts.length },
+  });
   return res.posts;
 }
 
@@ -198,6 +241,22 @@ export async function run({
   const runAt = runId ?? new Date().toISOString();
   let seq = 0;
 
+  // The campaign window every freshness count is measured against, and the
+  // per-run forensic trail. Both are best-effort: a journal write must never
+  // break a scrape, so every call below goes through `journal?.log?.(...)`.
+  const window = parseWindow({ campaignStart: config.campaignStart, campaignEnd: config.campaignEnd });
+  const journal = createJournal({
+    root: config.root,
+    runId: runAt,
+    business: config.business,
+    retentionDays: S.journalRetentionDays,
+  });
+  let caps = { tabs: false, screenshot: false };
+  let downgraded = false;
+  // Instagram records still missing fields (caption/username/takenAt), queued
+  // during the main loop and visited individually in the enrichment phase.
+  const enrichQueue = [];
+
   // A listener that throws (or a failing store) must never abort a scrape that
   // is holding the only Chrome session.
   const emit = (type, data = {}) => {
@@ -250,6 +309,9 @@ export async function run({
       onEvent: (e) => emit("connect_retry", e),
     });
 
+    caps = await detectCaps(client).catch(() => ({ tabs: false, screenshot: false }));
+    if (!S.pipelineTabs) caps.tabs = false;
+
     // Started after the jitter: the budget measures scraping, not the wait.
     const deadline = Date.now() + S.maxRunMinutes * 60_000;
 
@@ -269,11 +331,12 @@ export async function run({
       emit("hashtag_started", { platform: h.platform, hashtag: h.value, visitSeq: i + 1 });
 
       try {
-        const posts = await co(client, h, S);
-        const { newCount, cumulative } = await results.record(h, posts, runAt);
+        const posts = await co(client, h, S, { journal, caps, preloaded: h.__preloaded });
+        const { newCount, freshCount, cumulative } = await results.record(h, posts, runAt, window);
         const rowStatus = posts.length ? "ok" : "empty";
         await results.writeRow(h, runAt, {
           newCount,
+          freshCount,
           cumulative,
           status: rowStatus,
           postsOnPage: posts.length,
@@ -285,15 +348,21 @@ export async function run({
           visitSeq: i + 1,
           postsOnPage: posts.length,
           newCount,
+          freshCount,
           cumulative,
           status: rowStatus,
         });
+
+        // Fill the enrichment queue up to the per-run visit budget as we go.
+        const room = Math.max(0, (S.maxPostVisitsPerRun ?? 0) - enrichQueue.length);
+        for (const p of selectForEnrichment(posts, room)) enrichQueue.push({ ...p, hashtag: h });
       } catch (err) {
         const cumulative = await results.seenCount(h).catch(() => 0);
         if (err instanceof BlockError) {
           await results
             .writeRow(h, runAt, {
               newCount: 0,
+              freshCount: 0,
               cumulative,
               status: "aborted",
               postsOnPage: null,
@@ -303,12 +372,28 @@ export async function run({
             .catch(() => {});
           status = "aborted";
           abortReason = err.reason ?? "unknown";
+          let incidentDir = null;
+          try {
+            ({ incidentDir } = await captureIncident({
+              root: config.root,
+              runId: runAt,
+              business: config.business,
+              error: err,
+              journal,
+              client,
+              caps,
+              deps: { evalJs, screenshot: mcpScreenshot },
+            }));
+          } catch {
+            /* swallow: an incident bundle must never break the abort path */
+          }
           emit("danger", {
             platform: h.platform,
             hashtag: h.value,
             reason: err.reason ?? "unknown",
             url: err.url ?? null,
             message: err.message,
+            incidentDir,
           });
           break; // never retry past a danger signal
         }
@@ -331,12 +416,87 @@ export async function run({
       }
 
       if (i < targets.length - 1) {
+        // Single-tab in-place pipelining: during the idle gap, navigate the
+        // ONE active tab to the next hashtag's URL (never a background tab —
+        // ANTIBAN.md requires exactly one active tab at all times) and, for
+        // an Instagram next-target, arm capture immediately so it is
+        // installed before the feed's API calls fire during the gap.
+        const plan = planNext({ index: i, targets, caps, downgraded });
+        if (plan.preload) {
+          try {
+            await navigate(client, plan.url);
+            if (targets[i + 1].platform === "instagram") {
+              await evalJs(client, IG_CAPTURE_INSTALL);
+            }
+            targets[i + 1].__preloaded = true;
+            journal?.log?.("preload", { detail: { url: plan.url } });
+          } catch {
+            // Pipelining is a refinement, never something that can abort a
+            // run: downgrade to plain sequential visits for the rest of it.
+            downgraded = true;
+            journal?.log?.("downgrade", { detail: { reason: "preload_failed" } });
+          }
+        }
         const gapMs = rand(S.gapBetweenHashtagsMs[0], S.gapBetweenHashtagsMs[1]);
+        journal?.log?.("gap", { detail: { ms: gapMs } });
         emit("waiting", {
           seconds: Math.round(gapMs / 1000),
           next: asTarget(targets[i + 1]),
         });
         // Abortable, so a Stop button doesn't wait out a 7-minute gap.
+        await delay(gapMs, undefined, { signal }).catch(() => {});
+      }
+    }
+
+    // Enrichment phase: visit individual post pages for IG records still
+    // missing fields, up to the per-run visit budget, respecting the
+    // deadline and the abort signal like the main loop does.
+    if (client && enrichQueue.length && !signal?.aborted && Date.now() <= deadline) {
+      const enrichDeps = {
+        navigate,
+        evalJs,
+        assertSafe,
+        sleep,
+        pageLoadDelayMs: S.pageLoadDelayMs,
+        dwellMs: rand(S.initialDwellMs[0], S.initialDwellMs[1]),
+        journal,
+      };
+      const visitCap = S.maxPostVisitsPerRun ?? 0;
+      for (const rec of enrichQueue.slice(0, visitCap)) {
+        if (signal?.aborted || Date.now() > deadline) break;
+        try {
+          const enriched = await enrichPost(client, rec, enrichDeps);
+          await results.record(rec.hashtag, [enriched], runAt, window); // upsert fills fields
+        } catch (err) {
+          if (err instanceof BlockError) {
+            status = "aborted";
+            abortReason = err.reason ?? "unknown";
+            let incidentDir = null;
+            try {
+              ({ incidentDir } = await captureIncident({
+                root: config.root,
+                runId: runAt,
+                business: config.business,
+                error: err,
+                journal,
+                client,
+                caps,
+                deps: { evalJs, screenshot: mcpScreenshot },
+              }));
+            } catch {
+              /* swallow */
+            }
+            emit("danger", {
+              reason: abortReason,
+              url: err.url ?? null,
+              message: err.message,
+              incidentDir,
+            });
+            break;
+          }
+          journal?.log?.("post_visit", { detail: { id: rec.id, error: err.message } });
+        }
+        const gapMs = rand(S.gapBetweenHashtagsMs[0], S.gapBetweenHashtagsMs[1]);
         await delay(gapMs, undefined, { signal }).catch(() => {});
       }
     }
@@ -347,6 +507,7 @@ export async function run({
     releaseLock(lock);
   }
 
+  journal?.log?.("run_end", { detail: { status } });
   emit("run_finished", { status, abortReason });
   return {
     runId: runAt,

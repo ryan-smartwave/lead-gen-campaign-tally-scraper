@@ -464,3 +464,20 @@ test("a caller-supplied run id is used for the store and the events", async () =
   assert.equal(events.find((e) => e.type === "run_started").runId, runId);
   assert.deepEqual(rows, [runId], "the store is told the same id");
 });
+
+test("run passes rich records through and reports freshCount in hashtag_done", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }]);
+  config.campaignStart = "2026-08-01";
+  const events = [];
+  await run({
+    config,
+    onEvent: (e) => events.push(e),
+    deps: deps(async () => [
+      { id: "ig:p/1", platform: "instagram", takenAt: "2026-08-10T00:00:00Z" },
+      { id: "ig:p/2", platform: "instagram", takenAt: "2019-01-01T00:00:00Z" },
+    ]),
+  });
+  const done = events.find((e) => e.type === "hashtag_done");
+  assert.equal(done.newCount, 2);
+  assert.equal(done.freshCount, 1);
+});
