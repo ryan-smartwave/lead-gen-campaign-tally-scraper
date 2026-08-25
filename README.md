@@ -33,7 +33,8 @@ signed-in browser, so they must not be reachable from the network.
    ANTIBAN.md §2).
 4. `npm install`, then `cp .env.example .env` and put your Postgres connection
    string in it.
-5. Create the schema: `npm run db:migrate`
+5. **Apply migrations:** `npm run db:migrate` (includes schema migration 004 for
+   rich post fields and campaign freshness tallies).
 6. `npm run serve`
 
 ## Commands
@@ -55,8 +56,17 @@ Each business has its own hashtags and its own history:
 
 ```
 config.json              shared: mcpEndpoint + safety limits (the anti-ban firewall)
-businesses/<id>.json     per business: { name, hashtags: [{platform, value}] }
-data/                    run.lock, runs.log, and CLI-mode results
+businesses/<id>.json     per business: { name, hashtags: [{platform, value}],
+                         campaignStart?, campaignEnd? }
+data/
+  run.lock               guards Chrome — global, because every business shares one session
+  runs.log               one line per run (memory behind the once-a-day guard)
+  <id>/                  CLI-mode results (CSV + JSONL + seen.json dedup)
+  journal/<runId>.jsonl  forensic action log — always-on, one line per navigation/scroll/
+                         dwell/gap/capture/post-visit/danger event, pruned after 30 days
+  incidents/<runId>/     written on any danger sign: incident.json (reason, url, context,
+                         last 50 actions), best-effort page.txt and screenshot.png
+  incidents/index.log    cumulative index of all incidents
 ```
 
 Manage them from the UI's settings screen, or edit the files directly — the
@@ -67,6 +77,14 @@ can read them without filesystem access.
 **Safety limits are file-only and have no write route.** Hashtags are content;
 timing and volume limits are what keep the account unflagged, so nothing in the
 API can widen them.
+
+**Campaign freshness:** Each business may optionally set `campaignStart` and/or
+`campaignEnd` as ISO YYYY-MM-DD dates (e.g., `"2026-01-15"`) in its
+`businesses/<slug>.json` file, editable via the PATCH `/businesses/:slug` route.
+Tallies then record both `new_posts` (posts not seen in prior runs) and
+`fresh_posts` (posts that are both new AND posted within the campaign window).
+Posts of unknown age (all Facebook records, unenriched Instagram) still count —
+only posts known to predate the campaign are excluded.
 
 **More hashtags than `maxHashtagsPerRun`?** A run visits at most that many (12
 by default). A business tracking more still gets full coverage — each run picks
@@ -81,6 +99,19 @@ triggering runs at the same clock time every day cannot produce a fixed rhythm
 (ANTIBAN.md §5–6). The wait is announced as a `waiting` event, so the UI shows a
 countdown rather than a hang. `npm run run-once -- --now` skips it for a
 supervised terminal run — a human already present is a randomized start time.
+
+**Safety configuration keys** (in `config.json`, file-only):
+- `maxHashtagsPerRun` (default 12): cap on hashtags visited per run
+- `maxRunMinutes` (default 60): total run duration limit
+- `scrollsPerHashtag` (default 5): incremental scroll steps per hashtag page
+- `scrollPauseMs` (`[min, max]`, default 3000–9000): jitter between scroll steps
+- `gapBetweenHashtagsMs` (`[min, max]`, default 3–7 minutes): idle gap between hashtags
+- `initialDwellMs` (`[min, max]`, default 2–5 seconds): dwell before first scroll
+- `startJitterMs` (`[min, max]`, default 0–10 minutes): delay before run begins
+- `pageLoadDelayMs` (default 6000): wait after navigation before scraping
+- `maxPostVisitsPerRun` (default 8): cap on individual post enrichment visits per run
+- `pipelineTabs` (default true): enable single-tab pre-navigation during hashtag gaps
+- `journalRetentionDays` (default 30): days to keep forensic action logs
 
 ## HTTP API
 
@@ -139,12 +170,18 @@ once-a-day guard, so clearing the database cannot make it forget).
 ## Platform notes
 
 - **Instagram** is the strong target: a hashtag page yields ~50–70 posts per run,
-  identified by post shortcode, with the caption captured.
+  identified by post shortcode. Rich fields — **username, caption, image URL,
+  like count, posted-at timestamp** — are captured by patching the page's own
+  `fetch`/XHR and reading Instagram's GraphQL/API responses in-page (zero extra
+  requests). A capped fallback visits individual post pages for records still
+  missing fields (`safety.maxPostVisitsPerRun`, default 8 per run), at human
+  pace with the same jitter and danger checks as the main loop, and aborts on
+  any BlockError without retry.
 - **Facebook** works but returns fewer (~4–15/run), and is scraped via
   `facebook.com/search/posts?q=%23<tag>` rather than `/hashtag/`. Facebook hides
   post URLs from the automation layer, so those posts are identified by a
-  **content fingerprint** of author and caption. Facebook records therefore have
-  no URL — fine for a tally.
+  **content fingerprint** of author and caption. Facebook records have no URL,
+  no like count, and no timestamp — fine for a tally, but not enrichable.
 - mcp-chrome also redacts person names in returned fields, so an author may read
   `<redacted>`. The real name is inside the caption text used for the
   fingerprint, so counting is unaffected.
