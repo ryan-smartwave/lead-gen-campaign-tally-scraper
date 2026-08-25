@@ -6,9 +6,9 @@ const missing = (r) => r.takenAt == null || r.caption == null || r.username == n
 export function selectForEnrichment(records, cap) {
   const out = [];
   for (const r of records) {
+    if (out.length >= cap) break;      // check BEFORE pushing; also handles cap<=0
     if (r.platform !== "instagram") continue;
     if (missing(r)) out.push(r);
-    if (out.length >= cap) break;
   }
   return out;
 }
