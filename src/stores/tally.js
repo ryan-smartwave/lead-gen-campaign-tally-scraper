@@ -46,6 +46,27 @@ export class TallyStore {
     return { newCount: fresh.length, cumulative: seenIds.size };
   }
 
+  // When was each hashtag last visited? Read from tally.csv rather than kept in
+  // a side file, so history that predates this method still counts. Safe to
+  // split on commas: hashtag values are validated to contain none.
+  lastVisits() {
+    const out = {};
+    let text;
+    try {
+      text = fs.readFileSync(this.csvPath, "utf8");
+    } catch {
+      return out;
+    }
+    for (const line of text.split(/\r?\n/).slice(1)) {
+      if (!line.trim()) continue;
+      const [runAt, , platform, hashtag] = line.split(",");
+      if (!runAt || !platform || !hashtag) continue;
+      const key = `${platform}:${hashtag}`;
+      if (!(key in out) || runAt > out[key]) out[key] = runAt;
+    }
+    return out;
+  }
+
   writeRow(h, runAt, newCount, cumulative, status) {
     const date = runAt.slice(0, 10);
     const row = `${runAt},${date},${h.platform},${h.value},${newCount},${cumulative},${status}\n`;

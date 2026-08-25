@@ -132,6 +132,40 @@ export async function collect(client, h, safety) {
   return res.posts;
 }
 
+/* ---------------- target selection ---------------- */
+
+/**
+ * Which hashtags does this run visit?
+ *
+ * Under the cap: all of them, shuffled (ANTIBAN.md §6). Over the cap, a pure
+ * shuffle would let an unlucky hashtag starve for days, so the least recently
+ * visited are chosen first — asked of the store, because visit history must
+ * come from the same place the results go, like dedup does. Ties (including
+ * never-visited) break randomly, and the chosen set is shuffled again so the
+ * visit order never telegraphs the rotation. A store without history, or one
+ * that cannot answer, falls back to the shuffled slice: rotation is a
+ * refinement, never something that can block a run.
+ */
+export async function selectTargets(hashtags, cap, store) {
+  if (hashtags.length <= cap) return shuffle(hashtags);
+
+  let visits = null;
+  try {
+    visits = store?.lastVisits ? await store.lastVisits(hashtags) : null;
+  } catch {
+    visits = null;
+  }
+  if (!visits) return shuffle(hashtags).slice(0, cap);
+
+  // ISO timestamps compare lexically; "" sorts never-visited first. The sort is
+  // stable, so pre-shuffling randomizes the order among equal visit times.
+  const last = (h) => visits[`${h.platform}:${h.value}`] ?? "";
+  const chosen = shuffle(hashtags)
+    .sort((a, b) => (last(a) < last(b) ? -1 : last(a) > last(b) ? 1 : 0))
+    .slice(0, cap);
+  return shuffle(chosen);
+}
+
 /* ---------------- the run ---------------- */
 
 /**
@@ -141,6 +175,7 @@ export async function collect(client, h, safety) {
  * @param {(e:object)=>void} [opts.onEvent]
  * @param {AbortSignal} [opts.signal] cooperative stop between hashtags
  * @param {'web'|'cli'} [opts.source]
+ * @param {boolean} [opts.startNow]  skip the start jitter (supervised CLI runs only)
  * @param {object} [opts.deps]       test seams: {connect, disconnect, collect}
  */
 export async function run({
@@ -150,6 +185,7 @@ export async function run({
   signal,
   source = "cli",
   runId,
+  startNow = false,
   deps = {},
 } = {}) {
   const cx = deps.connect ?? connect;
@@ -172,9 +208,6 @@ export async function run({
     }
   };
 
-  const targets = shuffle(config.hashtags).slice(0, S.maxHashtagsPerRun);
-  const deadline = Date.now() + S.maxRunMinutes * 60_000;
-
   // Events use `hashtag` throughout, while config files use `value`. Translate
   // once, here, so every consumer sees one shape — a mismatch between the two
   // silently renders empty hashtag names and breaks per-target lookups.
@@ -182,6 +215,9 @@ export async function run({
 
   const lock = acquireLock(lockPathFor(config.root), source, S.maxRunMinutes);
   const results = store ?? createFileStore(config.dataDir);
+
+  // Selection needs the store: over the cap, it asks for visit history.
+  const targets = await selectTargets(config.hashtags, S.maxHashtagsPerRun, results);
 
   let status = "complete";
   let abortReason = null;
@@ -197,9 +233,25 @@ export async function run({
   });
 
   try {
+    // ANTIBAN.md §6: firing at the same clock minute daily is itself a fixed
+    // rhythm, so every run holds back a random beat before touching anything.
+    // Announced as a `waiting` event so watchers see a countdown, not a hang.
+    if (!startNow && S.startJitterMs?.[1] > 0) {
+      const waitMs = rand(S.startJitterMs[0], S.startJitterMs[1]);
+      emit("waiting", {
+        seconds: Math.round(waitMs / 1000),
+        reason: "start_jitter",
+        next: asTarget(targets[0]),
+      });
+      await delay(waitMs, undefined, { signal }).catch(() => {});
+    }
+
     client = await cx(config.mcpEndpoint, {
       onEvent: (e) => emit("connect_retry", e),
     });
+
+    // Started after the jitter: the budget measures scraping, not the wait.
+    const deadline = Date.now() + S.maxRunMinutes * 60_000;
 
     for (let i = 0; i < targets.length; i++) {
       const h = targets[i];

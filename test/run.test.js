@@ -313,6 +313,126 @@ test("an injected store receives every result and no files are written", async (
   assert.equal(fs.existsSync(path.join(config.dataDir, "posts")), false);
 });
 
+/** A minimal injected store; pass lastVisits to give it visit history. */
+function memoryStore(lastVisits) {
+  return {
+    kind: "test",
+    async record() {
+      return { newCount: 1, cumulative: 1 };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 0;
+    },
+    async finish() {},
+    ...(lastVisits ? { lastVisits } : {}),
+  };
+}
+
+test("more hashtags than the cap: the least recently visited are chosen", async () => {
+  const tags = ["a", "b", "c", "d", "e"].map((value) => ({ platform: "instagram", value }));
+  const config = fastConfig(tags, { maxHashtagsPerRun: 3 });
+  // b, c, d were visited before (c longest ago); a and e never were.
+  const store = memoryStore(async () => ({
+    "instagram:b": "2026-08-24T01:00:00.000Z",
+    "instagram:c": "2026-08-20T01:00:00.000Z",
+    "instagram:d": "2026-08-22T01:00:00.000Z",
+  }));
+
+  const events = [];
+  await run({
+    config,
+    store,
+    onEvent: (e) => events.push(e),
+    deps: deps(async (_c, h) => [{ id: `${h.value}:1` }]),
+  });
+
+  const visited = events
+    .filter((e) => e.type === "hashtag_done")
+    .map((e) => e.hashtag)
+    .sort();
+  assert.deepEqual(visited, ["a", "c", "e"], "the two never-visited plus the oldest visited");
+});
+
+test("a store without visit history still fills the run to the cap", async () => {
+  const tags = ["a", "b", "c", "d", "e"].map((value) => ({ platform: "instagram", value }));
+  const config = fastConfig(tags, { maxHashtagsPerRun: 3 });
+  const events = [];
+  await run({
+    config,
+    store: memoryStore(),
+    onEvent: (e) => events.push(e),
+    deps: deps(async (_c, h) => [{ id: `${h.value}:1` }]),
+  });
+  assert.equal(events.find((e) => e.type === "run_started").targets.length, 3);
+});
+
+test("a failing visit-history lookup falls back rather than blocking the run", async () => {
+  const tags = ["a", "b", "c", "d"].map((value) => ({ platform: "instagram", value }));
+  const config = fastConfig(tags, { maxHashtagsPerRun: 2 });
+  const store = memoryStore(async () => {
+    throw new Error("history unavailable");
+  });
+  const events = [];
+  const result = await run({
+    config,
+    store,
+    onEvent: (e) => events.push(e),
+    deps: deps(async (_c, h) => [{ id: `${h.value}:1` }]),
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(events.find((e) => e.type === "run_started").targets.length, 2);
+});
+
+test("a configured start jitter delays the first hashtag and is announced", async () => {
+  const config = fastConfig([TAGS[0]], { startJitterMs: [120, 120] });
+  const events = [];
+  const t0 = Date.now();
+  await run({
+    config,
+    onEvent: (e) => events.push(e),
+    deps: deps(async () => [{ id: "x:1" }]),
+  });
+
+  assert.ok(Date.now() - t0 >= 100, "the run actually waited before starting");
+  const arming = events.findIndex((e) => e.type === "waiting" && e.reason === "start_jitter");
+  const first = events.findIndex((e) => e.type === "hashtag_started");
+  assert.notEqual(arming, -1, "the wait is announced, not a silent hang");
+  assert.ok(arming < first, "announced before the first page visit");
+  assert.deepEqual(events[arming].next, { platform: "instagram", hashtag: "alpha" });
+});
+
+test("no start jitter configured means no arming wait", async () => {
+  const config = fastConfig([TAGS[0]]);
+  const events = [];
+  await run({
+    config,
+    onEvent: (e) => events.push(e),
+    deps: deps(async () => [{ id: "x:1" }]),
+  });
+  assert.equal(
+    events.some((e) => e.type === "waiting" && e.reason === "start_jitter"),
+    false,
+  );
+});
+
+test("startNow skips the start jitter for a supervised terminal run", async () => {
+  const config = fastConfig([TAGS[0]], { startJitterMs: [60000, 60000] });
+  const events = [];
+  const t0 = Date.now();
+  await run({
+    config,
+    startNow: true,
+    onEvent: (e) => events.push(e),
+    deps: deps(async () => [{ id: "x:1" }]),
+  });
+  assert.ok(Date.now() - t0 < 10000, "did not sit out the configured minute");
+  assert.equal(
+    events.some((e) => e.type === "waiting" && e.reason === "start_jitter"),
+    false,
+  );
+});
+
 test("a caller-supplied run id is used for the store and the events", async () => {
   const config = fastConfig([TAGS[0]]);
   const events = [];

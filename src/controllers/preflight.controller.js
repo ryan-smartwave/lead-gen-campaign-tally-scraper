@@ -4,6 +4,7 @@ import { isRunning, ranToday } from "../services/supervisor.service.js";
 import { probeMcp } from "../services/mcpProbe.service.js";
 import { BUSY_HINT } from "../services/mcp.service.js";
 import { campaignDay } from "../utils/day.js";
+import { coverageCheck } from "../utils/coverage.js";
 
 /**
  * Everything a client needs to decide whether a run can start, and to explain
@@ -81,6 +82,9 @@ export async function getPreflight(req, res) {
           ? `already ran today (${campaignDay()})`
           : `no run yet today (${campaignDay()})`,
       },
+      // Not a blocker — runs rotate through the excess — but never silent:
+      // the rotation leaves per-day gaps in each hashtag's series.
+      coverage: coverageCheck(business?.hashtags.length ?? 0, global.safety.maxHashtagsPerRun),
       sessions: {
         state: "not_checked",
         detail:

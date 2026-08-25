@@ -68,6 +68,20 @@ can read them without filesystem access.
 timing and volume limits are what keep the account unflagged, so nothing in the
 API can widen them.
 
+**More hashtags than `maxHashtagsPerRun`?** A run visits at most that many (12
+by default). A business tracking more still gets full coverage — each run picks
+the **least recently scraped** hashtags first — but on a rotation, so a hashtag
+that sat a day out has a gap in its daily series (the cumulative curve is
+unaffected). Preflight reports a `coverage` warning whenever this rotation is
+active.
+
+**Runs start on a randomized delay.** `safety.startJitterMs` (`[min, max]`,
+default 0–10 minutes) holds back the first page visit by a random wait, so
+triggering runs at the same clock time every day cannot produce a fixed rhythm
+(ANTIBAN.md §5–6). The wait is announced as a `waiting` event, so the UI shows a
+countdown rather than a hang. `npm run run-once -- --now` skips it for a
+supervised terminal run — a human already present is a randomized start time.
+
 ## HTTP API
 
 All JSON, all loopback.

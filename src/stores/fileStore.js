@@ -17,6 +17,9 @@ import { TallyStore } from "./tally.js";
  *   writeRow(hashtag, runAt, row)  -> void
  *   seenCount(hashtag)             -> number     (for the error/abort path)
  *   finish()                       -> void       (flush; optional)
+ *   lastVisits()                   -> { "platform:value": lastRunAt } (optional;
+ *                                     feeds least-recently-scraped rotation when
+ *                                     a business exceeds maxHashtagsPerRun)
  */
 
 /** Files under `dataDir`: tally.csv, seen.json, posts/*.jsonl. Used by the CLI. */
@@ -38,6 +41,9 @@ export function createFileStore(dataDir) {
     },
     async seenCount(h) {
       return (store.seen[TallyStore.key(h)] ?? []).length;
+    },
+    async lastVisits() {
+      return store.lastVisits();
     },
     async finish() {
       store.save();

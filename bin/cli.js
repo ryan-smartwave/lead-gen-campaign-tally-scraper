@@ -34,7 +34,11 @@ function printer(config) {
         console.error(`  DANGER: ${e.message} — aborting the whole run (no retry).`);
         break;
       case "waiting":
-        console.log(`  … waiting ${e.seconds}s before next hashtag`);
+        console.log(
+          e.reason === "start_jitter"
+            ? `  … randomized start: waiting ${e.seconds}s before the first hashtag (anti-ban; skip with --now)`
+            : `  … waiting ${e.seconds}s before next hashtag`,
+        );
         break;
       case "budget_reached":
         console.warn(`  run budget reached — stopping after ${e.completed} hashtags`);
@@ -62,8 +66,11 @@ const flag = (name) => {
   const i = args.indexOf(name);
   return i === -1 ? undefined : args[i + 1];
 };
-const mode = args.find((a) => a.startsWith("--") && !["--business"].includes(a)) ?? "--run";
+const mode = args.find((a) => a.startsWith("--") && !["--business", "--now"].includes(a)) ?? "--run";
 const business = flag("--business");
+// A human at the terminal is already a randomized start time; the enforced
+// jitter exists for habitual or scheduled triggering, so it may be skipped here.
+const startNow = args.includes("--now");
 
 if (mode === "--list") {
   const all = listBusinesses();
@@ -92,7 +99,7 @@ if (mode === "--list") {
 } else {
   (async () => {
     const config = loadConfig({ business });
-    await run({ config, onEvent: printer(config), source: "cli" });
+    await run({ config, onEvent: printer(config), source: "cli", startNow });
   })().catch((err) => {
     console.error(err.message);
     process.exit(1);

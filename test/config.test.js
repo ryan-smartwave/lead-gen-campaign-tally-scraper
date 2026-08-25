@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   loadConfig,
+  loadGlobal,
   listBusinesses,
   writeBusiness,
   deleteBusiness,
@@ -28,11 +29,26 @@ function tmpRoot() {
         scrollPauseMs: [3000, 9000],
         gapBetweenHashtagsMs: [180000, 420000],
         initialDwellMs: [2000, 5000],
+        startJitterMs: [0, 600000],
       },
     }),
   );
   return root;
 }
+
+test("safety.startJitterMs is required and reaches the run config", () => {
+  const withJitter = tmpRoot();
+  assert.deepEqual(loadGlobal(withJitter).safety.startJitterMs, [0, 600000]);
+
+  // Remove the key: the config must be rejected loudly, not silently unjittered —
+  // a fixed daily start time is itself a bot signature (ANTIBAN.md §5–6).
+  const root = tmpRoot();
+  const file = path.join(root, "config.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete raw.safety.startJitterMs;
+  fs.writeFileSync(file, JSON.stringify(raw));
+  assert.throws(() => loadGlobal(root), /startJitterMs/);
+});
 
 test("businesses round-trip through disk", () => {
   const root = tmpRoot();

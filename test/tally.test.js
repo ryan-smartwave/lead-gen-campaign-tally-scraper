@@ -48,6 +48,26 @@ test("a repeat of the same post under the same hashtag is not new", () => {
   assert.equal(again.cumulative, 1, "cumulative does not double-count");
 });
 
+test("lastVisits reports the newest run per hashtag", () => {
+  const dir = tmpDir();
+  const store = new TallyStore(dir);
+  const a = { platform: "instagram", value: "alpha" };
+  const b = { platform: "facebook", value: "beta" };
+  store.writeRow(a, "2026-08-20T01:00:00.000Z", 1, 1, "ok");
+  store.writeRow(a, "2026-08-22T01:00:00.000Z", 0, 1, "ok");
+  store.writeRow(b, "2026-08-21T01:00:00.000Z", 2, 2, "ok");
+
+  assert.deepEqual(store.lastVisits(), {
+    "instagram:alpha": "2026-08-22T01:00:00.000Z",
+    "facebook:beta": "2026-08-21T01:00:00.000Z",
+  });
+});
+
+test("lastVisits on a fresh store is empty, not an error", () => {
+  const store = new TallyStore(tmpDir());
+  assert.deepEqual(store.lastVisits(), {});
+});
+
 test("cumulative accumulates across runs and rows land in the csv", () => {
   const dir = tmpDir();
   const store = new TallyStore(dir);

@@ -1,6 +1,13 @@
 import { run } from "./run.service.js";
 import { loadConfig, listBusinesses, ROOT } from "../config/index.js";
-import { createDbStore, closeRun, heartbeat, ranOnDay, syncBusinesses } from "../stores/dbStore.js";
+import {
+  createDbStore,
+  closeRun,
+  heartbeat,
+  ranOnDay,
+  setRunTargets,
+  syncBusinesses,
+} from "../stores/dbStore.js";
 import { createFileStore } from "../stores/fileStore.js";
 import { isDbConfigured } from "../db/pool.js";
 import { appendLedger, ledgerHasRun } from "../utils/ledger.js";
@@ -173,6 +180,11 @@ export async function startRun({ business, force = false, store = "database" } =
   const onEvent = (event) => {
     push(event);
     if (event.type === "run_started") {
+      // The run row was created with every configured hashtag; over the cap the
+      // loop selects a rotation, so record what this run actually intends.
+      if (store !== "file" && isDbConfigured()) {
+        void setRunTargets(runId, event.targets).catch(() => {});
+      }
       resolveStarted({
         runId: event.runId,
         startedAt: event.at,

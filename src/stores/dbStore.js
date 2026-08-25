@@ -128,6 +128,17 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       return counted.rows[0]?.n ?? 0;
     },
 
+    // run_id is an ISO timestamp, so its lexical max IS the newest visit.
+    async lastVisits() {
+      await ready;
+      const res = await query(
+        `select platform, hashtag, max(run_id) as last from tallies
+         where business = $1 group by platform, hashtag`,
+        [business],
+      );
+      return Object.fromEntries(res.rows.map((r) => [`${r.platform}:${r.hashtag}`, r.last]));
+    },
+
     async finish() {
       await ready;
     },
@@ -140,6 +151,18 @@ export async function closeRun(runId, status, abortReason) {
     `update runs set status = $2, abort_reason = $3, finished_at = now() where id = $1`,
     [runId, status, abortReason],
   );
+}
+
+/**
+ * Replaces the run row's targets with what the run actually selected. The row
+ * is created before the loop picks its rotation, so over the hashtag cap the
+ * initial list would otherwise overstate what this run intended to visit.
+ */
+export async function setRunTargets(runId, targets) {
+  await query(`update runs set targets = $2::jsonb where id = $1`, [
+    runId,
+    JSON.stringify(targets),
+  ]);
 }
 
 /** Keeps the run row's heartbeat fresh through the long silent gaps. */
