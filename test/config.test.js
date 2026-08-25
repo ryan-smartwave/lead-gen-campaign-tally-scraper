@@ -169,3 +169,38 @@ test("loadGlobal exposes the new safety keys with defaults applied", () => {
   assert.equal(typeof g.safety.pipelineTabs, "boolean");
   assert.equal(typeof g.safety.journalRetentionDays, "number");
 });
+
+test("campaign dates round-trip and are preserved on undefined", () => {
+  const root = tmpRoot();
+  // Write a business with campaign dates
+  writeBusiness(
+    {
+      slug: "dated-biz",
+      name: "Dated Business",
+      hashtags: [],
+      campaignStart: "2026-08-01",
+      campaignEnd: "2026-08-31",
+    },
+    root,
+  );
+  // Verify dates round-trip through readBusiness
+  const read1 = readBusiness("dated-biz", root);
+  assert.equal(read1.campaignStart, "2026-08-01");
+  assert.equal(read1.campaignEnd, "2026-08-31");
+
+  // Update without dates: undefined should preserve existing values
+  writeBusiness(
+    {
+      slug: "dated-biz",
+      name: "Updated Name",
+      hashtags: [],
+      campaignStart: undefined,
+      campaignEnd: undefined,
+    },
+    root,
+  );
+  const read2 = readBusiness("dated-biz", root);
+  assert.equal(read2.campaignStart, "2026-08-01", "omitted date preserved existing campaignStart");
+  assert.equal(read2.campaignEnd, "2026-08-31", "omitted date preserved existing campaignEnd");
+  assert.equal(read2.name, "Updated Name", "name was updated");
+});
