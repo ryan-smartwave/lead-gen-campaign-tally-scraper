@@ -176,14 +176,14 @@ export async function openWithCapture(client, url, journal, retryDelayMs = 2000)
 }
 
 export async function collect(client, h, safety, ctx = {}) {
-  const { journal, preloaded, seenIds, window = null } = ctx;
+  const { journal, preloaded, seenIds, window = null, fbLocationId = null } = ctx;
   // Number = capture live in that tab; true = live, tab unknown; null = none.
   let captureTab = preloaded ? (h.__captureTab ?? null) : null;
   if (!preloaded) {
     // Both platforms serve their result data over /api/graphql, so both get
     // the passive debugger capture wrapped around navigation.
-    captureTab = await openWithCapture(client, hashtagUrl(h, window), journal);
-    if (captureTab == null) await navigate(client, hashtagUrl(h, window));
+    captureTab = await openWithCapture(client, hashtagUrl(h, window, fbLocationId), journal);
+    if (captureTab == null) await navigate(client, hashtagUrl(h, window, fbLocationId));
     journal?.log?.("navigate", { platform: h.platform, hashtag: h.value });
   } else {
     // The page is already loaded from the preceding gap's preload — nothing to
@@ -583,6 +583,7 @@ export async function run({
       }
 
       emit("hashtag_started", { platform: h.platform, hashtag: h.value, visitSeq: i + 1 });
+      const visitStart = Date.now();
 
       try {
         // The campaign's known post ids for this hashtag, so the collector can
@@ -595,7 +596,10 @@ export async function run({
         } catch {
           seenIds = null;
         }
-        const posts = await co(client, h, S, { journal, caps, preloaded: h.__preloaded, seenIds, window });
+        const posts = await co(client, h, S, {
+          journal, caps, preloaded: h.__preloaded, seenIds, window,
+          fbLocationId: config.fbLocationId ?? null,
+        });
         for (const p of posts) {
           p.otherHashtags = extractOtherHashtags(
             [p.caption, p.text, p.preview].filter(Boolean).join(" "),
@@ -604,6 +608,7 @@ export async function run({
         }
         const { newCount, freshCount, cumulative } = await results.record(h, posts, runAt, window);
         const rowStatus = posts.length ? "ok" : "empty";
+        const durationSeconds = Math.round((Date.now() - visitStart) / 1000);
         await results.writeRow(h, runAt, {
           newCount,
           freshCount,
@@ -611,6 +616,7 @@ export async function run({
           status: rowStatus,
           postsOnPage: posts.length,
           visitSeq: i + 1,
+          durationSeconds,
         });
         emit("hashtag_done", {
           platform: h.platform,
@@ -621,6 +627,7 @@ export async function run({
           freshCount,
           cumulative,
           status: rowStatus,
+          durationSeconds,
         });
 
         // Fill the enrichment queue up to the per-run visit budget as we go.
@@ -637,6 +644,7 @@ export async function run({
               status: "aborted",
               postsOnPage: null,
               visitSeq: i + 1,
+              durationSeconds: Math.round((Date.now() - visitStart) / 1000),
               message: err.reason ?? err.message,
             })
             .catch(() => {});
@@ -691,7 +699,10 @@ export async function run({
         // ANTIBAN.md requires exactly one active tab at all times) and, for
         // an Instagram next-target, arm capture immediately so it is
         // installed before the feed's API calls fire during the gap.
-        const plan = planNext({ index: i, targets, caps, downgraded, window });
+        const plan = planNext({
+          index: i, targets, caps, downgraded, window,
+          fbLocationId: config.fbLocationId ?? null,
+        });
         if (plan.preload) {
           try {
             // Capture must be running when the page loads — that is when both

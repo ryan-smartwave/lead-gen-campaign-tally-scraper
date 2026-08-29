@@ -108,6 +108,23 @@ export function igMediaUrl(id) {
   return code ? `https://www.instagram.com/p/${code}/media/?size=l` : null;
 }
 
+/**
+ * Resolve a field from an ordered [source-name, value] chain: the first
+ * non-null value wins and its source label is recorded; when nothing hits,
+ * the provenance says which sources were tried — that is what lets a null in
+ * the posts table answer "what did we try?".
+ */
+function picked(sources, field, chain) {
+  for (const [source, value] of chain) {
+    if (value != null) {
+      sources[field] = source;
+      return value;
+    }
+  }
+  sources[field] = `missed:${chain.map(([s]) => s).join(",")}`;
+  return null;
+}
+
 // Field precedence on both platforms: captured GraphQL > React-prop read
 // (prop* fields the in-page extractor lifted off the card's fiber — passive,
 // best-effort) > DOM > derived fallback.
@@ -115,16 +132,39 @@ export function mergeRecords(domPosts, capturedPosts) {
   const capByCode = new Map(capturedPosts.map((c) => [shortcodeOf(c.id), c]));
   return domPosts.map((d) => {
     const c = capByCode.get(shortcodeOf(d.id)) ?? {};
+    const fs = {};
     return {
       id: d.id,                                   // DOM id is canonical (knows reel vs post)
-      url: d.url ?? null,                          // DOM wins for url
-      imageUrl: c.imageUrl ?? d.imageUrl ?? decodeImageUrl(d.propImage) ?? igMediaUrl(d.id),
-      caption: c.caption ?? d.propCaption ?? d.preview ?? null,
-      username: c.username ?? d.propUsername ?? null,
-      likeCount: c.likeCount ?? d.propLikeCount ?? null,
-      commentCount: c.commentCount ?? d.propCommentCount ?? null,
-      takenAt: c.takenAt ?? d.propTakenAt ?? null,
+      url: picked(fs, "url", [["dom", d.url ?? null]]),
+      imageUrl: picked(fs, "imageUrl", [
+        ["capture", c.imageUrl ?? null],
+        ["dom", d.imageUrl ?? null],
+        ["prop", decodeImageUrl(d.propImage)],
+        ["derived-media-url", igMediaUrl(d.id)],
+      ]),
+      caption: picked(fs, "caption", [
+        ["capture", c.caption ?? null],
+        ["prop", d.propCaption ?? null],
+        ["dom-alt", d.preview ?? null],
+      ]),
+      username: picked(fs, "username", [
+        ["capture", c.username ?? null],
+        ["prop", d.propUsername ?? null],
+      ]),
+      likeCount: picked(fs, "likeCount", [
+        ["capture", c.likeCount ?? null],
+        ["prop", d.propLikeCount ?? null],
+      ]),
+      commentCount: picked(fs, "commentCount", [
+        ["capture", c.commentCount ?? null],
+        ["prop", d.propCommentCount ?? null],
+      ]),
+      takenAt: picked(fs, "takenAt", [
+        ["capture", c.takenAt ?? null],
+        ["prop", d.propTakenAt ?? null],
+      ]),
       platform: "instagram",
+      fieldSources: fs,
     };
   });
 }
@@ -483,17 +523,47 @@ export function mergeFbRecords(domPosts, capturedStories) {
     // the stored record shape.
     const { propUrl, propUsername, propCaption, propImage, propTakenAt,
             propLikeCount, propCommentCount, ...rest } = d;
+    const fs = {};
     return {
       ...rest,
       platform: "facebook",
-      author: decodeFbText(d.author) ?? fbNameFromCardText(d.text),
-      url: hit?.url ?? d.url ?? decodeFbUrl(propUrl) ?? fbUrlFromPostId(d.id),
-      caption: hit?.caption ?? propCaption ?? null, // full message — past "See more"
-      username: hit?.username ?? propUsername ?? null,
-      imageUrl: hit?.imageUrl ?? d.imageUrl ?? decodeImageUrl(propImage),
-      likeCount: hit?.likeCount ?? propLikeCount ?? null,
-      commentCount: hit?.commentCount ?? propCommentCount ?? null,
-      takenAt: hit?.takenAt ?? propTakenAt ?? null,
+      author: picked(fs, "author", [
+        ["dom-b64", decodeFbText(d.author)],
+        ["text-parse", fbNameFromCardText(d.text)],
+      ]),
+      url: picked(fs, "url", [
+        ["capture", hit?.url ?? null],
+        ["dom", d.url ?? null],
+        ["prop", decodeFbUrl(propUrl)],
+        ["derived-fbid", fbUrlFromPostId(d.id)],
+      ]),
+      // caption is the full message — past "See more"
+      caption: picked(fs, "caption", [
+        ["capture", hit?.caption ?? null],
+        ["prop", propCaption ?? null],
+      ]),
+      username: picked(fs, "username", [
+        ["capture", hit?.username ?? null],
+        ["prop", propUsername ?? null],
+      ]),
+      imageUrl: picked(fs, "imageUrl", [
+        ["capture", hit?.imageUrl ?? null],
+        ["dom", d.imageUrl ?? null],
+        ["prop", decodeImageUrl(propImage)],
+      ]),
+      likeCount: picked(fs, "likeCount", [
+        ["capture", hit?.likeCount ?? null],
+        ["prop", propLikeCount ?? null],
+      ]),
+      commentCount: picked(fs, "commentCount", [
+        ["capture", hit?.commentCount ?? null],
+        ["prop", propCommentCount ?? null],
+      ]),
+      takenAt: picked(fs, "takenAt", [
+        ["capture", hit?.takenAt ?? null],
+        ["prop", propTakenAt ?? null],
+      ]),
+      fieldSources: fs,
     };
   });
 }

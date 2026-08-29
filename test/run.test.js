@@ -779,3 +779,16 @@ test("enrichment paces post visits with postVisitGapMs, not the hashtag gap", as
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 2500, `run took ${elapsed}ms — enrichment is still using the 3s hashtag gap`);
 });
+
+test("hashtag_done reports how long the visit took", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }]);
+  const events = [];
+  await run({
+    config,
+    onEvent: (e) => events.push(e),
+    deps: deps(async (_c, h) => [{ platform: h.platform, id: "ig:p/D1" }]),
+  });
+  const done = events.find((e) => e.type === "hashtag_done");
+  assert.equal(typeof done.durationSeconds, "number");
+  assert.ok(done.durationSeconds >= 0);
+});

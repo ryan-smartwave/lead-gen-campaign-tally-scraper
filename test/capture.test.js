@@ -433,3 +433,29 @@ test("fbNameFromCardText finds the name after an album title", async () => {
   // An album card with no post-title marker still refuses to guess.
   assert.equal(fbNameFromCardText("Album RENSIE & AMOR // Dream Wedding Package"), null);
 });
+
+/* ---------------- field provenance ---------------- */
+
+test("IG merge records where each field came from", async () => {
+  const { mergeRecords } = await import("../src/services/capture.service.js");
+  const dom = [{ platform: "instagram", id: "ig:p/SRC", url: "https://x", preview: "alt",
+    propUsername: "from_props" }];
+  const captured = [{ id: "ig:p/SRC", imageUrl: "https://img", caption: "cap",
+    username: null, likeCount: 5, commentCount: null, takenAt: null }];
+  const [m] = mergeRecords(dom, captured);
+  assert.equal(m.fieldSources.imageUrl, "capture");
+  assert.equal(m.fieldSources.caption, "capture");
+  assert.equal(m.fieldSources.username, "prop");
+  assert.equal(m.fieldSources.likeCount, "capture");
+  assert.match(m.fieldSources.commentCount, /^missed:/);
+});
+
+test("FB merge records provenance including derived urls and parsed authors", async () => {
+  const { mergeFbRecords } = await import("../src/services/capture.service.js");
+  const dom = [{ platform: "facebook", id: "fb:id777",
+    text: "Host Jasmine · Follow · lovely day", author: null }];
+  const [m] = mergeFbRecords(dom, []);
+  assert.equal(m.fieldSources.url, "derived-fbid");
+  assert.equal(m.fieldSources.author, "text-parse");
+  assert.match(m.fieldSources.caption, /^missed:/);
+});

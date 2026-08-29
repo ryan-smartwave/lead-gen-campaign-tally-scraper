@@ -66,3 +66,26 @@ test("enrichPost rejects when evalJs returns loggedOut: true", async () => {
     (e) => e.name === "BlockError"
   );
 });
+
+test("enrichPost marks fields it filled as enrichment-sourced", async () => {
+  const record = {
+    id: "ig:p/EN1", platform: "instagram", url: "https://x",
+    caption: null, username: null, likeCount: null,
+    fieldSources: { caption: "missed:capture,prop", username: "missed:capture,prop" },
+  };
+  const deps = {
+    navigate: async () => {},
+    evalJs: async () => ({
+      loggedOut: false,
+      records: [{ code: "EN1", caption: { text: "found it" }, user: { username: "u1" } }],
+    }),
+    assertSafe: async () => {},
+    sleep: async () => {},
+    pageLoadDelayMs: 1,
+    dwellMs: 1,
+  };
+  const out = await enrichPost({}, record, deps);
+  assert.equal(out.caption, "found it");
+  assert.equal(out.fieldSources.caption, "enrichment");
+  assert.equal(out.fieldSources.username, "enrichment");
+});

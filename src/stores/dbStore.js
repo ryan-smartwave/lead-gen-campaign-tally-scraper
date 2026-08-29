@@ -65,8 +65,9 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
         const res = await query(
           `insert into posts (campaign, platform, hashtag, post_id, first_run_id, first_seen_at,
                               url, preview, author, body, username, caption, image_url,
-                              like_count, comment_count, taken_at, enriched_at, other_hashtags)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                              like_count, comment_count, taken_at, enriched_at, other_hashtags,
+                              field_sources)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            on conflict (campaign, platform, hashtag, post_id) do update set
              like_count    = coalesce(excluded.like_count, posts.like_count),
              comment_count = coalesce(excluded.comment_count, posts.comment_count),
@@ -76,7 +77,10 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
              taken_at      = coalesce(posts.taken_at, excluded.taken_at),
              enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at),
              -- a sparser re-sighting (null) never wipes tags derived earlier
-             other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags)
+             other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags),
+           -- provenance: the first sighting's map is kept; enrichment overlays
+           -- its own keys through the enrich() path below
+           field_sources = coalesce(posts.field_sources, excluded.field_sources)
            returning (xmax = 0) as inserted`,
           [
             campaign,
@@ -97,6 +101,7 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
             toIso(post.takenAt),
             post.enrichedAt ?? null,
             post.otherHashtags?.length ? post.otherHashtags : null,
+            post.fieldSources ?? null,
           ],
         );
         if (res.rows[0]?.inserted) {
@@ -126,8 +131,9 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
       await query(
         `insert into posts (campaign, platform, hashtag, post_id, first_run_id, first_seen_at,
                             url, preview, author, body, username, caption, image_url,
-                            like_count, comment_count, taken_at, enriched_at, other_hashtags)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                            like_count, comment_count, taken_at, enriched_at, other_hashtags,
+                            field_sources)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          on conflict (campaign, platform, hashtag, post_id) do update set
            like_count    = coalesce(excluded.like_count, posts.like_count),
            comment_count = coalesce(excluded.comment_count, posts.comment_count),
@@ -136,7 +142,11 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
            image_url     = coalesce(posts.image_url, excluded.image_url),
            taken_at      = coalesce(posts.taken_at, excluded.taken_at),
            enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at),
-           other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags)`,
+           other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags),
+           -- enrichment's map is record's map plus its own keys, so the
+           -- per-key overlay (right side wins) is exactly right here
+           field_sources = coalesce(posts.field_sources, '{}'::jsonb)
+                           || coalesce(excluded.field_sources, '{}'::jsonb)`,
         [
           campaign,
           h.platform,
@@ -156,6 +166,7 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
           toIso(record.takenAt),
           record.enrichedAt ?? null,
           record.otherHashtags?.length ? record.otherHashtags : null,
+          record.fieldSources ?? null,
         ],
       );
     },
@@ -167,8 +178,8 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
       await query(
         `insert into tallies (campaign, run_id, platform, hashtag, campaign_day, visit_seq,
                               posts_on_page, new_posts, cumulative_unique, status, message,
-                              fresh_posts)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                              fresh_posts, duration_seconds)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          on conflict (campaign, run_id, platform, hashtag) do update set
            posts_on_page = excluded.posts_on_page,
            new_posts = excluded.new_posts,
@@ -176,7 +187,8 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
            status = excluded.status,
            visit_seq = excluded.visit_seq,
            message = excluded.message,
-           fresh_posts = excluded.fresh_posts`,
+           fresh_posts = excluded.fresh_posts,
+           duration_seconds = excluded.duration_seconds`,
         [
           campaign,
           runId,
@@ -190,6 +202,7 @@ export function createDbStore({ campaign, campaignName, runId, budgetMinutes, ta
           row.status,
           row.message ?? null,
           row.freshCount ?? 0,
+          row.durationSeconds ?? null,
         ],
       );
     },
@@ -279,13 +292,16 @@ export async function ranOnDay(campaign, day) {
 export async function syncCampaigns(campaigns) {
   for (const b of campaigns) {
     await query(
-      `insert into campaigns (slug, name, created_at, hashtags, campaign_start, campaign_end)
-       values ($1,$2,$3,$4::jsonb,$5,$6)
+      `insert into campaigns (slug, name, created_at, hashtags, campaign_start, campaign_end,
+                              country, fb_location_id)
+       values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)
        on conflict (slug) do update set
          name = excluded.name,
          hashtags = excluded.hashtags,
          campaign_start = excluded.campaign_start,
-         campaign_end = excluded.campaign_end`,
+         campaign_end = excluded.campaign_end,
+         country = excluded.country,
+         fb_location_id = excluded.fb_location_id`,
       [
         b.slug,
         b.name,
@@ -295,6 +311,8 @@ export async function syncCampaigns(campaigns) {
         ),
         b.campaignStart ?? null,
         b.campaignEnd ?? null,
+        b.country ?? "Philippines",
+        b.fbLocationId ?? null,
       ],
     );
   }

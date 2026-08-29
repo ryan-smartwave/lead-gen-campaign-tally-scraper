@@ -288,3 +288,58 @@ test("loadGlobal rejects malformed postVisitGapMs", () => {
   fs.writeFileSync(file, JSON.stringify(raw));
   assert.throws(() => loadGlobal(root), /postVisitGapMs/);
 });
+
+/* ---------------- country + FB location filter ---------------- */
+
+test("campaigns default country to Philippines and round-trip fbLocationId", () => {
+  const root = tmpRoot();
+  writeCampaign({ slug: "loc", name: "Loc", hashtags: [{ platform: "facebook", value: "x" }] }, root);
+  assert.equal(readCampaign("loc", root).country, "Philippines");
+
+  writeCampaign(
+    { slug: "loc", name: "Loc", hashtags: [{ platform: "facebook", value: "x" }],
+      country: "Singapore", fbLocationId: "103975476306462" },
+    root,
+  );
+  const c = readCampaign("loc", root);
+  assert.equal(c.country, "Singapore");
+  assert.equal(c.fbLocationId, "103975476306462");
+  assert.equal(loadConfig({ campaign: "loc", root }).fbLocationId, "103975476306462");
+});
+
+test("writeCampaign rejects a malformed fbLocationId", () => {
+  const root = tmpRoot();
+  assert.throws(
+    () => writeCampaign(
+      { slug: "bad", name: "Bad", hashtags: [], fbLocationId: "not-a-place" }, root),
+    /fbLocationId/,
+  );
+});
+
+test("hashtagUrl combines the FB date and location filters", async () => {
+  const { hashtagUrl } = await import("../src/config/index.js");
+  const window = { start: new Date("2026-06-01"), end: new Date("2026-08-27") };
+  const url = hashtagUrl({ platform: "facebook", value: "x" }, window, "103975476306462");
+  const outer = JSON.parse(
+    Buffer.from(new URL(url).searchParams.get("filters"), "base64").toString("utf8"),
+  );
+  assert.ok(outer["rp_creation_time:0"], "date filter present");
+  const loc = JSON.parse(outer["rp_location:0"]);
+  assert.equal(loc.name, "location");
+  assert.equal(loc.args, "103975476306462");
+});
+
+test("hashtagUrl applies the location filter without a window", async () => {
+  const { hashtagUrl } = await import("../src/config/index.js");
+  const url = hashtagUrl({ platform: "facebook", value: "x" }, null, "103975476306462");
+  const outer = JSON.parse(
+    Buffer.from(new URL(url).searchParams.get("filters"), "base64").toString("utf8"),
+  );
+  assert.equal(outer["rp_creation_time:0"], undefined);
+  assert.ok(outer["rp_location:0"]);
+  // Instagram has no filter facility; the location id is ignored there.
+  assert.equal(
+    hashtagUrl({ platform: "instagram", value: "x" }, null, "103975476306462"),
+    "https://www.instagram.com/explore/tags/x/",
+  );
+});

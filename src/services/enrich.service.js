@@ -54,12 +54,23 @@ export async function enrichPost(client, record, deps) {
     responses: [...netBlobs, decodeCandidateUrls(res?.records)],
     inline: [],
   }).filter((r) => shortcode(r.id) === shortcode(record.id));
-  const out = { ...record, enrichedAt: new Date().toISOString() };
+  const out = {
+    ...record,
+    enrichedAt: new Date().toISOString(),
+    fieldSources: { ...(record.fieldSources ?? {}) },
+  };
   if (found) {
     for (const k of ["takenAt", "caption", "username", "imageUrl", "likeCount", "commentCount"]) {
-      if (out[k] == null && found[k] != null) out[k] = found[k];
+      if (out[k] == null && found[k] != null) {
+        out[k] = found[k];
+        out.fieldSources[k] = "enrichment";
+      }
     }
   }
-  if (out.imageUrl == null) out.imageUrl = decodeImageUrl(res?.ogImage) ?? igMediaUrl(record.id);
+  if (out.imageUrl == null) {
+    const og = decodeImageUrl(res?.ogImage);
+    out.imageUrl = og ?? igMediaUrl(record.id);
+    out.fieldSources.imageUrl = og ? "enrichment-og" : "derived-media-url";
+  }
   return out;
 }

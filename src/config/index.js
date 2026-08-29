@@ -231,6 +231,8 @@ export function listCampaigns(root = ROOT) {
         createdAt: raw.createdAt ?? null,
         campaignStart: raw.campaignStart ?? null,
         campaignEnd: raw.campaignEnd ?? null,
+        country: raw.country ?? "Philippines",
+        fbLocationId: raw.fbLocationId ?? null,
       });
     } catch {
       /* a malformed campaign file is skipped rather than breaking every read */
@@ -243,7 +245,10 @@ export function readCampaign(slug, root = ROOT) {
   return listCampaigns(root).find((b) => b.slug === slug) ?? null;
 }
 
-export function writeCampaign({ slug, name, hashtags = [], createdAt, campaignStart, campaignEnd }, root = ROOT) {
+export function writeCampaign(
+  { slug, name, hashtags = [], createdAt, campaignStart, campaignEnd, country, fbLocationId },
+  root = ROOT,
+) {
   if (!SLUG_RE.test(slug)) {
     throw new Error(`invalid slug ${JSON.stringify(slug)} — use lowercase letters, digits, hyphens`);
   }
@@ -254,6 +259,12 @@ export function writeCampaign({ slug, name, hashtags = [], createdAt, campaignSt
   const dateProblems = validateCampaignDates(campaignStart, campaignEnd);
   if (dateProblems.length) throw new Error(`invalid campaign dates:\n  - ${dateProblems.join("\n  - ")}`);
 
+  // A Facebook geo place id (digits). Country-level ids are not honored by
+  // FB's location filter, but that can't be validated by shape — only length.
+  if (fbLocationId != null && fbLocationId !== "" && !/^\d{6,}$/.test(String(fbLocationId))) {
+    throw new Error(`invalid fbLocationId ${JSON.stringify(fbLocationId)} — expected a numeric Facebook place id`);
+  }
+
   fs.mkdirSync(campaignsDir(root), { recursive: true });
   fs.mkdirSync(campaignDataDir(slug, root), { recursive: true });
   const existing = readCampaign(slug, root);
@@ -263,6 +274,8 @@ export function writeCampaign({ slug, name, hashtags = [], createdAt, campaignSt
     hashtags: hashtags.map((h) => ({ platform: h.platform, value: h.value })),
     campaignStart: campaignStart ?? existing?.campaignStart ?? null,
     campaignEnd: campaignEnd ?? existing?.campaignEnd ?? null,
+    country: country ?? existing?.country ?? "Philippines",
+    fbLocationId: (fbLocationId ?? existing?.fbLocationId ?? null) || null,
   };
   fs.writeFileSync(campaignFile(slug, root), `${JSON.stringify(payload, null, 2)}\n`);
   return { slug, ...payload };
@@ -303,6 +316,8 @@ export function loadConfig({ campaign, root = ROOT } = {}) {
     hashtags: chosen.hashtags,
     campaignStart: chosen.campaignStart ?? null,
     campaignEnd: chosen.campaignEnd ?? null,
+    country: chosen.country ?? "Philippines",
+    fbLocationId: chosen.fbLocationId ?? null,
     dataDir: campaignDataDir(chosen.slug, root),
     root,
   };
@@ -312,7 +327,7 @@ export function loadConfig({ campaign, root = ROOT } = {}) {
 // rp_creation_time range at day granularity (verified live 2026-08-27: a
 // June-only window changed the result set). FB's own UI emits unpadded
 // month/day values ("2026-6", "2026-6-1"), so match that exactly.
-function fbDateFilters(window) {
+function fbDateArgs(window) {
   const part = (d) => ({
     year: String(d.getUTCFullYear()),
     month: `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
@@ -320,27 +335,38 @@ function fbDateFilters(window) {
   });
   const s = part(window.start);
   const e = part(window.end);
-  const args = JSON.stringify({
+  return JSON.stringify({
     start_year: s.year, start_month: s.month, start_day: s.day,
     end_year: e.year, end_month: e.month, end_day: e.day,
   });
-  const outer = JSON.stringify({
-    "rp_creation_time:0": JSON.stringify({ name: "creation_time", args }),
-  });
-  return Buffer.from(outer).toString("base64");
 }
 
 /**
- * The URL a hashtag visit navigates to. `window` ({start, end} Dates, from
- * parseWindow) narrows Facebook results to the campaign window — only when
- * both bounds exist, since that is the only shape verified against the live
- * endpoint. Instagram's search has no date facility; the window is ignored.
+ * The URL a hashtag visit navigates to. Facebook accepts filters; Instagram's
+ * search has none, so both extra arguments are ignored there.
+ *
+ * `window` ({start, end} Dates, from parseWindow) narrows results to the
+ * campaign window — only when both bounds exist, the only shape verified live.
+ * `fbLocationId` is a Facebook geo place id (city/metro granularity — country
+ * ids are not honored, verified live 2026-08-29) applied as FB's own
+ * "tagged location" filter.
  */
-export function hashtagUrl(h, window = null) {
+export function hashtagUrl(h, window = null, fbLocationId = null) {
   if (h.platform === "instagram") {
     return `https://www.instagram.com/explore/tags/${h.value}/`;
   }
   const base = `https://www.facebook.com/search/posts?q=%23${encodeURIComponent(h.value)}`;
-  if (!window?.start || !window?.end) return base;
-  return `${base}&filters=${encodeURIComponent(fbDateFilters(window))}`;
+  const filters = {};
+  if (window?.start && window?.end) {
+    filters["rp_creation_time:0"] = JSON.stringify({
+      name: "creation_time",
+      args: fbDateArgs(window),
+    });
+  }
+  if (fbLocationId) {
+    filters["rp_location:0"] = JSON.stringify({ name: "location", args: String(fbLocationId) });
+  }
+  if (Object.keys(filters).length === 0) return base;
+  const encoded = Buffer.from(JSON.stringify(filters)).toString("base64");
+  return `${base}&filters=${encodeURIComponent(encoded)}`;
 }

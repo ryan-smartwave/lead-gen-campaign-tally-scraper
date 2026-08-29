@@ -43,6 +43,8 @@ export async function create(req, res) {
       hashtags: req.body?.hashtags ?? [],
       campaignStart: req.body?.campaignStart,
       campaignEnd: req.body?.campaignEnd,
+      country: req.body?.country,
+      fbLocationId: req.body?.fbLocationId,
     });
     await refreshCampaignMirror().catch(() => {});
     res.json({ campaign });
@@ -69,6 +71,8 @@ export async function update(req, res) {
       hashtags,
       campaignStart: req.body?.campaignStart,
       campaignEnd: req.body?.campaignEnd,
+      country: req.body?.country,
+      fbLocationId: req.body?.fbLocationId,
     });
     await refreshCampaignMirror().catch(() => {});
     res.json({ campaign });
