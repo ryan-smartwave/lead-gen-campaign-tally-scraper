@@ -177,6 +177,8 @@ export async function openWithCapture(client, url, journal, retryDelayMs = 2000)
 
 export async function collect(client, h, safety, ctx = {}) {
   const { journal, preloaded, seenIds, window = null, fbLocationId = null } = ctx;
+  // Out-channel: how the scroll ended, for the run loop's hashtag_done event.
+  const meta = ctx.meta ?? {};
   // Number = capture live in that tab; true = live, tab unknown; null = none.
   let captureTab = preloaded ? (h.__captureTab ?? null) : null;
   if (!preloaded) {
@@ -322,6 +324,7 @@ export async function collect(client, h, safety, ctx = {}) {
         // abort then, not when the scroll ends. Throws BlockError on danger.
         await assertSafe(client, `${h.platform}#${h.value} mid-scroll`);
       }
+      meta.scrollSteps = i + 1;
       if (dryLimit && dryStreak >= dryLimit) {
         // The feed stopped serving new posts — exhausted or soft-limited.
         // Continuing to hammer an empty feed gains nothing and looks like a
@@ -331,6 +334,7 @@ export async function collect(client, h, safety, ctx = {}) {
           hashtag: h.value,
           detail: { steps: i + 1, posts: byId.size },
         });
+        meta.stopReason = "dry";
         return false;
       }
       if (postCap && byId.size >= postCap) {
@@ -339,10 +343,13 @@ export async function collect(client, h, safety, ctx = {}) {
           hashtag: h.value,
           detail: { steps: i + 1, posts: byId.size },
         });
+        meta.stopReason = "post_cap";
         return false;
       }
     },
   );
+  // No early stop recorded means the scroll ran out its allotment.
+  if (!meta.stopReason) meta.stopReason = deep ? "budget" : "steps";
   await assertSafe(client, `${h.platform}#${h.value} after-scroll`);
   const res = { posts: [...byId.values()] };
 
@@ -596,9 +603,13 @@ export async function run({
         } catch {
           seenIds = null;
         }
+        // meta is collect's out-channel: it fills in how the scroll ended
+        // (stopReason/scrollSteps) so the UI can say WHY a visit was short.
+        const meta = {};
         const posts = await co(client, h, S, {
           journal, caps, preloaded: h.__preloaded, seenIds, window,
           fbLocationId: config.fbLocationId ?? null,
+          meta,
         });
         for (const p of posts) {
           p.otherHashtags = extractOtherHashtags(
@@ -628,6 +639,8 @@ export async function run({
           cumulative,
           status: rowStatus,
           durationSeconds,
+          stopReason: meta.stopReason,
+          scrollSteps: meta.scrollSteps,
         });
 
         // Fill the enrichment queue up to the per-run visit budget as we go.

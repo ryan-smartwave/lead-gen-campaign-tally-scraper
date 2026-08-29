@@ -792,3 +792,20 @@ test("hashtag_done reports how long the visit took", async () => {
   assert.equal(typeof done.durationSeconds, "number");
   assert.ok(done.durationSeconds >= 0);
 });
+
+test("hashtag_done carries the collector's stop reason and step count", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }]);
+  const events = [];
+  await run({
+    config,
+    onEvent: (e) => events.push(e),
+    deps: deps(async (_c, h, _s, ctx) => {
+      ctx.meta.stopReason = "dry";
+      ctx.meta.scrollSteps = 12;
+      return [{ platform: h.platform, id: "ig:p/M1" }];
+    }),
+  });
+  const done = events.find((e) => e.type === "hashtag_done");
+  assert.equal(done.stopReason, "dry");
+  assert.equal(done.scrollSteps, 12);
+});
