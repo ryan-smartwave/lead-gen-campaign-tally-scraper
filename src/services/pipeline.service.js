@@ -1,7 +1,7 @@
 import { hashtagUrl } from "../config/index.js";
 
-export function planNext({ index, targets, caps, downgraded }) {
+export function planNext({ index, targets, caps, downgraded, window = null }) {
   const canPreload = !!caps?.tabs && !downgraded && index < targets.length - 1;
   const next = canPreload ? targets[index + 1] : null;
-  return { preload: canPreload, url: next ? hashtagUrl({ platform: next.platform, value: next.value }) : null };
+  return { preload: canPreload, url: next ? hashtagUrl({ platform: next.platform, value: next.value }, window) : null };
 }

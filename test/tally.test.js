@@ -174,3 +174,16 @@ test("enrichPost merges fields into the existing jsonl line", () => {
   const linesAfter = fs.readFileSync(jsonlPath, "utf8").trim().split("\n");
   assert.equal(linesAfter.length, 1, "no phantom line was added for the unmatched id");
 });
+
+test("fileStore.seenIds returns every recorded id for the hashtag", async () => {
+  const { createFileStore } = await import("../src/stores/fileStore.js");
+  const dir = tmpDir();
+  const store = createFileStore(dir);
+  const h = { platform: "instagram", value: "frontier" };
+  await store.record(h, [{ id: "ig:p/A" }, { id: "ig:p/B" }], "T1");
+  await store.record(h, [{ id: "ig:p/B" }, { id: "ig:p/C" }], "T2");
+
+  const ids = await store.seenIds(h);
+  assert.deepEqual([...ids].sort(), ["ig:p/A", "ig:p/B", "ig:p/C"]);
+  assert.deepEqual(await store.seenIds({ platform: "instagram", value: "other" }), []);
+});

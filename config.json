@@ -1,16 +1,38 @@
 {
   "mcpEndpoint": "http://127.0.0.1:12306/mcp",
   "safety": {
-    "maxHashtagsPerRun": 12,
-    "maxRunMinutes": 60,
+    "maxHashtagsPerRun": 10,
+    "maxRunMinutes": 330,
     "scrollsPerHashtag": 5,
+    "scrollMinutesPerHashtag": [
+      20,
+      28
+    ],
     "scrollPauseMs": [
       3000,
       9000
     ],
+    "restEveryMs": [
+      150000,
+      300000
+    ],
+    "restPauseMs": [
+      15000,
+      45000
+    ],
+    "dryStopAfterScrolls": 7,
+    "maxPostsPerHashtag": 3000,
     "gapBetweenHashtagsMs": [
       180000,
       420000
+    ],
+    "crossPlatformGapMs": [
+      60000,
+      150000
+    ],
+    "postVisitGapMs": [
+      45000,
+      120000
     ],
     "initialDwellMs": [
       2000,

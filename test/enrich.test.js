@@ -35,17 +35,19 @@ test("enrichPost fills null-only fields from the post page and stamps enrichedAt
     journal: { log: () => {} },
     evalJs: async () => ({
       loggedOut: false,
-      responses: [{ data: { recent: { sections: [{ layout_content: { medias: [
-        { media: { code: "ABC", like_count: 7, taken_at: 123, user: { username: "acme" }, caption: { text: "hello" } } },
-      ]}}] } } }],
-      inline: [], ogImage: "https://img/x.jpg",
+      // compact in-page records (IG_POST_EXTRACT walks the page itself; raw
+      // blobs are truncated by the bridge and can never be shipped)
+      records: [
+        { code: "ABC", like_count: 7, taken_at: 123, user: { username: "acme" }, caption: { text: "hello" } },
+      ],
+      ogImage: "b64:" + Buffer.from("https://scontent.cdninstagram.com/v/x.jpg?oh=1&oe=2").toString("base64"),
     }),
   };
   const out = await enrichPost({ fake: true }, record, deps);
   assert.equal(out.username, "acme");
   assert.equal(out.caption, "hello");
   assert.equal(out.takenAt, 123);
-  assert.equal(out.imageUrl, "https://img/x.jpg");
+  assert.equal(out.imageUrl, "https://scontent.cdninstagram.com/v/x.jpg?oh=1&oe=2");
   assert.ok(out.enrichedAt);
 });
 
@@ -57,7 +59,7 @@ test("enrichPost rejects when evalJs returns loggedOut: true", async () => {
     sleep: async () => {},
     pageLoadDelayMs: 0, dwellMs: 0,
     journal: { log: () => {} },
-    evalJs: async () => ({ loggedOut: true, responses: [], inline: [] }),
+    evalJs: async () => ({ loggedOut: true }),
   };
   await assert.rejects(
     enrichPost({ fake: true }, record, deps),

@@ -4,15 +4,13 @@
   "hashtags": [
     {
       "platform": "instagram",
-      "value": "bloomweddings"
-    },
-    {
-      "platform": "instagram",
-      "value": "cebuweddings"
+      "value": "weddingsph"
     },
     {
       "platform": "facebook",
-      "value": "bloomweddings"
+      "value": "weddingsph"
     }
-  ]
+  ],
+  "campaignStart": "2026-08-20",
+  "campaignEnd": "2026-12-20"
 }

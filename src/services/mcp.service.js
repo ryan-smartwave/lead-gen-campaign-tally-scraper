@@ -85,6 +85,61 @@ export async function evalJs(client, code, opts = {}) {
   return r;
 }
 
+/**
+ * Passive network capture through the extension's debugger backend — the only
+ * reliable way to read Instagram's API responses. In-page fetch/XHR patching
+ * cannot work: the page binds its own reference to fetch at bootstrap, and the
+ * initial data burst fires before any post-load script could install.
+ *
+ * Starting WITH the url makes the extension open/navigate the tab itself, so
+ * the initial burst is captured too. Purely observational: not one extra
+ * request is sent.
+ */
+export async function startNetCapture(client, url, maxCaptureTime = 15 * 60_000) {
+  const raw = await callTool(client, "chrome_network_capture", {
+    action: "start",
+    needResponseBody: true,
+    url,
+    maxCaptureTime,
+    inactivityTimeout: 0,
+  });
+  const res = JSON.parse(raw);
+  if (!res?.success) throw new Error(`network capture start refused: ${raw.slice(0, 200)}`);
+  return { tabId: typeof res.tabId === "number" ? res.tabId : null };
+}
+
+/** Stop the capture and return its payload ({requests: [...]}, see blobsFromNetworkCapture). */
+export async function stopNetCapture(client) {
+  const raw = await callTool(client, "chrome_network_capture", { action: "stop" });
+  return JSON.parse(raw);
+}
+
+/**
+ * Restart capture on the CURRENT tab, without a url (a url would make the
+ * extension navigate — mid-scroll that would reset the feed). Used to cycle
+ * capture during long scrolls: each stop payload stays small enough to survive
+ * the bridge, while coverage of the pagination traffic stays continuous.
+ * Throws if the extension refuses; callers degrade gracefully.
+ */
+export async function resumeNetCapture(client, maxCaptureTime = 5 * 60_000) {
+  const raw = await callTool(client, "chrome_network_capture", {
+    action: "start",
+    needResponseBody: true,
+    maxCaptureTime,
+    inactivityTimeout: 0,
+  });
+  const res = JSON.parse(raw);
+  if (!res?.success) throw new Error(`network capture resume refused: ${raw.slice(0, 200)}`);
+}
+
+export async function switchTab(client, tabId) {
+  await callTool(client, "chrome_switch_tab", { tabId });
+}
+
+export async function closeTabs(client, tabIds) {
+  await callTool(client, "chrome_close_tabs", { tabIds });
+}
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function detectCaps(client) {

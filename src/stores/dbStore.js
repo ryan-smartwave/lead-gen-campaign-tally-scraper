@@ -65,8 +65,8 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
         const res = await query(
           `insert into posts (business, platform, hashtag, post_id, first_run_id, first_seen_at,
                               url, preview, author, body, username, caption, image_url,
-                              like_count, comment_count, taken_at, enriched_at)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                              like_count, comment_count, taken_at, enriched_at, other_hashtags)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
            on conflict (business, platform, hashtag, post_id) do update set
              like_count    = coalesce(excluded.like_count, posts.like_count),
              comment_count = coalesce(excluded.comment_count, posts.comment_count),
@@ -74,7 +74,9 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
              username      = coalesce(posts.username, excluded.username),
              image_url     = coalesce(posts.image_url, excluded.image_url),
              taken_at      = coalesce(posts.taken_at, excluded.taken_at),
-             enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at)
+             enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at),
+             -- a sparser re-sighting (null) never wipes tags derived earlier
+             other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags)
            returning (xmax = 0) as inserted`,
           [
             business,
@@ -94,6 +96,7 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
             post.commentCount ?? null,
             toIso(post.takenAt),
             post.enrichedAt ?? null,
+            post.otherHashtags?.length ? post.otherHashtags : null,
           ],
         );
         if (res.rows[0]?.inserted) {
@@ -123,8 +126,8 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
       await query(
         `insert into posts (business, platform, hashtag, post_id, first_run_id, first_seen_at,
                             url, preview, author, body, username, caption, image_url,
-                            like_count, comment_count, taken_at, enriched_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                            like_count, comment_count, taken_at, enriched_at, other_hashtags)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          on conflict (business, platform, hashtag, post_id) do update set
            like_count    = coalesce(excluded.like_count, posts.like_count),
            comment_count = coalesce(excluded.comment_count, posts.comment_count),
@@ -132,7 +135,8 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
            username      = coalesce(posts.username, excluded.username),
            image_url     = coalesce(posts.image_url, excluded.image_url),
            taken_at      = coalesce(posts.taken_at, excluded.taken_at),
-           enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at)`,
+           enriched_at   = coalesce(excluded.enriched_at, posts.enriched_at),
+           other_hashtags = coalesce(excluded.other_hashtags, posts.other_hashtags)`,
         [
           business,
           h.platform,
@@ -151,6 +155,7 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
           record.commentCount ?? null,
           toIso(record.takenAt),
           record.enrichedAt ?? null,
+          record.otherHashtags?.length ? record.otherHashtags : null,
         ],
       );
     },
@@ -197,6 +202,19 @@ export function createDbStore({ business, campaign, runId, budgetMinutes, target
         [business, h.platform, h.value],
       );
       return counted.rows[0]?.n ?? 0;
+    },
+
+    // Every post id already recorded for this hashtag. Feeds the collector's
+    // known-frontier stop (see fileStore.seenIds). A 4-month campaign tops out
+    // in the low tens of thousands of ids per hashtag — fine to hold in memory.
+    async seenIds(h) {
+      await ready;
+      const res = await query(
+        `select post_id from posts
+         where business = $1 and platform = $2 and hashtag = $3`,
+        [business, h.platform, h.value],
+      );
+      return res.rows.map((r) => r.post_id);
     },
 
     // run_id is an ISO timestamp, so its lexical max IS the newest visit.

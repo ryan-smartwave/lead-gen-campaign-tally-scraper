@@ -101,7 +101,19 @@ connects; the only enforced waits are the randomized gaps between hashtags
 - `maxHashtagsPerRun` (default 12): cap on hashtags visited per run
 - `maxRunMinutes` (default 60): total run duration limit
 - `scrollsPerHashtag` (default 5): incremental scroll steps per hashtag page
+- `scrollMinutesPerHashtag` (`[min, max]` minutes, optional, capped at 45): deep-scroll
+  mode — scroll each hashtag for a randomized time budget instead of a step count.
+  See "Deep scroll mode" in [ANTIBAN.md](ANTIBAN.md). When set, pair it with a lower
+  `maxHashtagsPerRun` and a higher `maxRunMinutes`
 - `scrollPauseMs` (`[min, max]`, default 3000–9000): jitter between scroll steps
+- `restEveryMs` / `restPauseMs` (`[min, max]`, defaults 2.5–5 min / 15–45 s):
+  randomized "reading breaks" inside long scrolls
+- `dryStopAfterScrolls` (default 10, 0 disables): end a hashtag after this many
+  consecutive scroll steps that surface no posts new to the campaign — the scroll
+  stops at the frontier of what previous runs already recorded, so daily runs
+  shrink automatically once the backlog is captured
+- `maxPostsPerHashtag` (default 3000, 0 disables): end a hashtag once this many
+  posts have been collected
 - `gapBetweenHashtagsMs` (`[min, max]`, default 3–7 minutes): idle gap between hashtags
 - `initialDwellMs` (`[min, max]`, default 2–5 seconds): dwell before first scroll
 - `pageLoadDelayMs` (default 6000): wait after navigation before scraping
@@ -165,14 +177,24 @@ once-a-day guard, so clearing the database cannot make it forget).
 
 ## Platform notes
 
-- **Instagram** is the strong target: a hashtag page yields ~50–70 posts per run,
-  identified by post shortcode. Rich fields — **username, caption, image URL,
-  like count, posted-at timestamp** — are captured by patching the page's own
-  `fetch`/XHR and reading Instagram's GraphQL/API responses in-page (zero extra
-  requests). A capped fallback visits individual post pages for records still
-  missing fields (`safety.maxPostVisitsPerRun`, default 8 per run), at human
-  pace with the same jitter and danger checks as the main loop, and aborts on
-  any BlockError without retry.
+- **Instagram** is the strong target: a hashtag page yields ~50–150 posts per
+  run, identified by post shortcode. Note Instagram now redirects
+  `/explore/tags/<tag>/` to its keyword-search page; extraction handles both.
+  The DOM is read incrementally after every scroll step (the grid is
+  virtualized — posts scrolled past leave the DOM, so a single read at the end
+  would lose most of them). Every post gets an **image URL** via Instagram's
+  stable `/p/<shortcode>/media/?size=l` redirect (signed CDN URLs expire within
+  weeks; this one doesn't). **Username, caption, like count, posted-at** come
+  from two passive sources: `chrome_network_capture` response bodies (started
+  before navigation, zero extra requests) and an in-page walk of the inline
+  Relay JSON that returns compact records — raw payloads cannot be shipped out
+  of the page because mcp-chrome truncates large tool results and redacts URLs
+  carrying query strings. Grid pages expose little of this, so the main source
+  is the capped enrichment phase: it visits individual post pages (their inline
+  JSON carries everything) for records still missing fields
+  (`safety.maxPostVisitsPerRun`, default 8 per run), at human pace with the
+  same jitter and danger checks as the main loop, and aborts on any BlockError
+  without retry.
 - **Facebook** works but returns fewer (~4–15/run), and is scraped via
   `facebook.com/search/posts?q=%23<tag>` rather than `/hashtag/`. Facebook hides
   post URLs from the automation layer, so those posts are identified by a
@@ -182,5 +204,6 @@ once-a-day guard, so clearing the database cannot make it forget).
   `<redacted>`. The real name is inside the caption text used for the
   fingerprint, so counting is unaffected.
 - Selectors live in [src/services/extract.service.js](src/services/extract.service.js)
-  and are brittle by nature. [diagnose.mjs](diagnose.mjs) re-inspects a page when
-  extraction returns 0: `node diagnose.mjs "<url>"`.
+  and are brittle by nature. [diagnose.mjs](diagnose.mjs) runs the real collect
+  pipeline once, with abbreviated pacing, when extraction misbehaves:
+  `node diagnose.mjs [instagram|facebook] [hashtag]`.

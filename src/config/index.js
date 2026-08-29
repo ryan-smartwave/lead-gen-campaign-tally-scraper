@@ -100,11 +100,55 @@ export function loadGlobal(root = ROOT) {
     if (!ok) problems.push(`safety.${key} must be [min, max] with min <= max`);
   }
 
-  const OPT_NUM = { maxPostVisitsPerRun: 8, journalRetentionDays: 30 };
+  const OPT_NUM = {
+    maxPostVisitsPerRun: 8,
+    journalRetentionDays: 30,
+    // Deep-scroll guards (0 disables either): stop a hashtag after this many
+    // consecutive scroll steps that surface no new posts, and after this many
+    // total posts. Only meaningful alongside scrollMinutesPerHashtag, but
+    // harmless in step mode.
+    dryStopAfterScrolls: 10,
+    maxPostsPerHashtag: 3000,
+  };
   for (const [key, def] of Object.entries(OPT_NUM)) {
     if (safety[key] === undefined) safety[key] = def;
     else if (typeof safety[key] !== "number" || safety[key] < 0) {
       problems.push(`safety.${key} must be a non-negative number`);
+    }
+  }
+
+  // Optional [min, max] pairs. scrollMinutesPerHashtag switches the scroll to a
+  // time budget (absent = legacy fixed step count); it is capped at 45 minutes
+  // because past that a single "session" on one hashtag stops resembling any
+  // human behavior at all. restEveryMs/restPauseMs add reading breaks inside a
+  // long scroll and default on so deep mode can't be configured without them.
+  const OPT_PAIRS = {
+    scrollMinutesPerHashtag: null,
+    restEveryMs: [150_000, 300_000],
+    restPauseMs: [15_000, 45_000],
+    // Pause between individual post visits in the enrichment phase. Its own
+    // pacing on purpose: reusing the hashtag gap froze the run ~5 minutes
+    // between two post clicks, which no human does.
+    postVisitGapMs: [45_000, 120_000],
+    // Gap when the NEXT hashtag is on the other platform. The platform being
+    // left just started a rest that lasts the other platform's whole scroll,
+    // so only a short human breather is needed at the switch itself.
+    crossPlatformGapMs: [60_000, 150_000],
+  };
+  for (const [key, def] of Object.entries(OPT_PAIRS)) {
+    if (safety[key] === undefined || safety[key] === null) {
+      safety[key] = def;
+      continue;
+    }
+    const pair = safety[key];
+    const ok =
+      Array.isArray(pair) &&
+      pair.length === 2 &&
+      pair.every((n) => typeof n === "number" && n > 0) &&
+      pair[0] <= pair[1];
+    if (!ok) problems.push(`safety.${key} must be [min, max] with 0 < min <= max`);
+    else if (key === "scrollMinutesPerHashtag" && pair[1] > 45) {
+      problems.push("safety.scrollMinutesPerHashtag max is capped at 45 minutes");
     }
   }
   if (safety.pipelineTabs === undefined) safety.pipelineTabs = true;
@@ -122,9 +166,16 @@ export function loadGlobal(root = ROOT) {
       maxHashtagsPerRun: safety.maxHashtagsPerRun,
       maxRunMinutes: safety.maxRunMinutes,
       scrollsPerHashtag: safety.scrollsPerHashtag,
+      scrollMinutesPerHashtag: safety.scrollMinutesPerHashtag,
       pageLoadDelayMs: safety.pageLoadDelayMs,
       scrollPauseMs: safety.scrollPauseMs,
+      restEveryMs: safety.restEveryMs,
+      restPauseMs: safety.restPauseMs,
+      dryStopAfterScrolls: safety.dryStopAfterScrolls,
+      maxPostsPerHashtag: safety.maxPostsPerHashtag,
       gapBetweenHashtagsMs: safety.gapBetweenHashtagsMs,
+      crossPlatformGapMs: safety.crossPlatformGapMs,
+      postVisitGapMs: safety.postVisitGapMs,
       initialDwellMs: safety.initialDwellMs,
       maxPostVisitsPerRun: safety.maxPostVisitsPerRun,
       pipelineTabs: safety.pipelineTabs,
@@ -257,8 +308,39 @@ export function loadConfig({ business, root = ROOT } = {}) {
   };
 }
 
-export function hashtagUrl(h) {
-  return h.platform === "instagram"
-    ? `https://www.instagram.com/explore/tags/${h.value}/`
-    : `https://www.facebook.com/search/posts?q=%23${encodeURIComponent(h.value)}`;
+// Facebook's search accepts a base64 `filters` param carrying an
+// rp_creation_time range at day granularity (verified live 2026-08-27: a
+// June-only window changed the result set). FB's own UI emits unpadded
+// month/day values ("2026-6", "2026-6-1"), so match that exactly.
+function fbDateFilters(window) {
+  const part = (d) => ({
+    year: String(d.getUTCFullYear()),
+    month: `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
+    day: `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`,
+  });
+  const s = part(window.start);
+  const e = part(window.end);
+  const args = JSON.stringify({
+    start_year: s.year, start_month: s.month, start_day: s.day,
+    end_year: e.year, end_month: e.month, end_day: e.day,
+  });
+  const outer = JSON.stringify({
+    "rp_creation_time:0": JSON.stringify({ name: "creation_time", args }),
+  });
+  return Buffer.from(outer).toString("base64");
+}
+
+/**
+ * The URL a hashtag visit navigates to. `window` ({start, end} Dates, from
+ * parseWindow) narrows Facebook results to the campaign window — only when
+ * both bounds exist, since that is the only shape verified against the live
+ * endpoint. Instagram's search has no date facility; the window is ignored.
+ */
+export function hashtagUrl(h, window = null) {
+  if (h.platform === "instagram") {
+    return `https://www.instagram.com/explore/tags/${h.value}/`;
+  }
+  const base = `https://www.facebook.com/search/posts?q=%23${encodeURIComponent(h.value)}`;
+  if (!window?.start || !window?.end) return base;
+  return `${base}&filters=${encodeURIComponent(fbDateFilters(window))}`;
 }

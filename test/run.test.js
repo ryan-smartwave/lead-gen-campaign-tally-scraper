@@ -116,6 +116,63 @@ test("emitted targets use `hashtag`, never the config's `value`", async () => {
   }
 });
 
+test("collect receives the store's seen ids as a Set (known-frontier stop)", async () => {
+  const config = fastConfig([TAGS[0]]);
+  const ctxs = [];
+  const store = {
+    kind: "spy",
+    async record() {
+      return { newCount: 0, freshCount: 0, cumulative: 2 };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 2;
+    },
+    async seenIds() {
+      return ["ig:p/OLD1", "ig:p/OLD2"];
+    },
+  };
+  await run({
+    config,
+    store,
+    deps: deps(async (_c, _h, _s, ctx) => {
+      ctxs.push(ctx);
+      return [];
+    }),
+  });
+  assert.equal(ctxs.length, 1);
+  assert.ok(ctxs[0].seenIds instanceof Set);
+  assert.ok(ctxs[0].seenIds.has("ig:p/OLD1"));
+});
+
+test("a store without seenIds (or a failing one) still lets the run proceed", async () => {
+  const config = fastConfig([TAGS[0]]);
+  const ctxs = [];
+  const store = {
+    kind: "spy",
+    async record() {
+      return { newCount: 1, freshCount: 1, cumulative: 1 };
+    },
+    async writeRow() {},
+    async seenCount() {
+      return 1;
+    },
+    async seenIds() {
+      throw new Error("history unavailable");
+    },
+  };
+  const result = await run({
+    config,
+    store,
+    deps: deps(async (_c, h, _s, ctx) => {
+      ctxs.push(ctx);
+      return [{ id: `${h.value}:1` }];
+    }),
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(ctxs[0].seenIds, null, "a failing lookup degrades to the full scroll budget");
+});
+
 test("an empty page is recorded as empty, not as an error", async () => {
   const config = fastConfig([TAGS[0]]);
   const events = [];
@@ -596,4 +653,129 @@ test("the time budget expiring during enrichment marks the run budget_stopped", 
 
   assert.equal(result.status, "budget_stopped");
   assert.equal(enrichCalls.length, 0, "deadline already passed, so enrichment never visits a post");
+});
+
+test("openWithCapture retries a refused start and journals both attempts", async () => {
+  const { openWithCapture } = await import("../src/services/run.service.js");
+  let starts = 0;
+  const client = {
+    callTool: async ({ name }) => {
+      if (name === "chrome_network_capture") {
+        starts++;
+        if (starts === 1) return { isError: true, content: [{ type: "text", text: "busy" }] };
+        return { content: [{ type: "text", text: JSON.stringify({ success: true, tabId: 7 }) }] };
+      }
+      return { content: [{ type: "text", text: "{}" }] }; // chrome_switch_tab
+    },
+  };
+  const types = [];
+  const journal = { log: (t) => types.push(t) };
+  const tab = await openWithCapture(client, "https://example.test/tag", journal, 1);
+  assert.equal(tab, 7, "second attempt succeeded and returned the capture tab");
+  assert.ok(types.includes("capture_start_failed"), "the refusal is journaled, not silent");
+  assert.ok(types.includes("capture_start"));
+});
+
+test("recorded posts carry otherHashtags extracted from their caption", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }]);
+  await run({
+    config,
+    deps: deps(async (_c, h) => [
+      { platform: h.platform, id: "ig:p/X1", caption: "so lovely #Alpha #Venue #JuneBride" },
+      { platform: h.platform, id: "ig:p/X2", preview: "grid alt text #backup" },
+    ]),
+  });
+
+  const lines = fs
+    .readFileSync(path.join(config.dataDir, "posts", "instagram-alpha.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const byId = Object.fromEntries(lines.map((p) => [p.id, p]));
+  assert.deepEqual(byId["ig:p/X1"].otherHashtags, ["venue", "junebride"]);
+  assert.deepEqual(byId["ig:p/X2"].otherHashtags, ["backup"]);
+});
+
+/* ---------------- platform alternation + gap selection ---------------- */
+
+test("alternatePlatforms interleaves the two platforms", async () => {
+  const { alternatePlatforms } = await import("../src/services/run.service.js");
+  const mixed = [
+    { platform: "instagram", value: "a" },
+    { platform: "instagram", value: "b" },
+    { platform: "facebook", value: "a" },
+    { platform: "instagram", value: "c" },
+    { platform: "facebook", value: "b" },
+    { platform: "facebook", value: "c" },
+  ];
+  const out = alternatePlatforms(mixed);
+  assert.equal(out.length, 6);
+  for (let i = 1; i < out.length; i++) {
+    assert.notEqual(out[i].platform, out[i - 1].platform, `adjacent same platform at ${i}`);
+  }
+});
+
+test("alternatePlatforms appends the surplus when counts are uneven", async () => {
+  const { alternatePlatforms } = await import("../src/services/run.service.js");
+  const mixed = [
+    { platform: "instagram", value: "a" },
+    { platform: "instagram", value: "b" },
+    { platform: "instagram", value: "c" },
+    { platform: "facebook", value: "a" },
+  ];
+  const out = alternatePlatforms(mixed);
+  assert.equal(out.length, 4);
+  assert.deepEqual(out.map((t) => t.value).sort(), ["a", "a", "b", "c"]);
+});
+
+test("selectTargets returns a platform-alternating order", async () => {
+  const { selectTargets } = await import("../src/services/run.service.js");
+  const tags = [
+    { platform: "instagram", value: "a" },
+    { platform: "instagram", value: "b" },
+    { platform: "instagram", value: "c" },
+    { platform: "facebook", value: "a" },
+    { platform: "facebook", value: "b" },
+    { platform: "facebook", value: "c" },
+  ];
+  const out = await selectTargets(tags, 12, null);
+  for (let i = 1; i < out.length; i++) {
+    assert.notEqual(out[i].platform, out[i - 1].platform);
+  }
+});
+
+test("gapRangeFor picks the short pair across platforms, the long pair within one", async () => {
+  const { gapRangeFor } = await import("../src/services/run.service.js");
+  const S = { gapBetweenHashtagsMs: [180000, 420000], crossPlatformGapMs: [60000, 150000] };
+  assert.deepEqual(
+    gapRangeFor({ platform: "instagram" }, { platform: "facebook" }, S),
+    [60000, 150000],
+  );
+  assert.deepEqual(
+    gapRangeFor({ platform: "facebook" }, { platform: "facebook" }, S),
+    [180000, 420000],
+  );
+});
+
+test("enrichment paces post visits with postVisitGapMs, not the hashtag gap", async () => {
+  const config = fastConfig([{ platform: "instagram", value: "alpha" }], {
+    gapBetweenHashtagsMs: [3000, 3000],
+    postVisitGapMs: [1, 1],
+    crossPlatformGapMs: [1, 1],
+    maxPostVisitsPerRun: 2,
+  });
+  const started = Date.now();
+  await run({
+    config,
+    deps: {
+      ...deps(async (_c, h) => [
+        // Missing username/caption/takenAt → selected for enrichment.
+        { platform: h.platform, id: "ig:p/E1", url: "https://x/1" },
+        { platform: h.platform, id: "ig:p/E2", url: "https://x/2" },
+      ]),
+      enrichPost: async (_c, rec) => rec,
+    },
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2500, `run took ${elapsed}ms — enrichment is still using the 3s hashtag gap`);
 });

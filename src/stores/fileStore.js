@@ -16,6 +16,9 @@ import { TallyStore } from "./tally.js";
  *   record(hashtag, posts, runAt)  -> { newCount, cumulative }
  *   writeRow(hashtag, runAt, row)  -> void
  *   seenCount(hashtag)             -> number     (for the error/abort path)
+ *   seenIds(hashtag)               -> [postId,…] (optional; lets the collector
+ *                                     stop scrolling once the feed serves only
+ *                                     already-recorded posts)
  *   finish()                       -> void       (flush; optional)
  *   lastVisits()                   -> { "platform:value": lastRunAt } (optional;
  *                                     feeds least-recently-scraped rotation when
@@ -54,6 +57,12 @@ export function createFileStore(dataDir) {
     },
     async seenCount(h) {
       return (store.seen[TallyStore.key(h)] ?? []).length;
+    },
+    // Every post id already recorded for this hashtag. Feeds the collector's
+    // known-frontier stop: scrolling ends once the feed serves only posts the
+    // campaign already has, so daily runs spend requests only on what's new.
+    async seenIds(h) {
+      return store.seen[TallyStore.key(h)] ?? [];
     },
     async lastVisits() {
       return store.lastVisits();

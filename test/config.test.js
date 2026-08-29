@@ -155,6 +155,41 @@ test("loadGlobal exposes the new safety keys with defaults applied", () => {
   assert.equal(typeof g.safety.journalRetentionDays, "number");
 });
 
+/** Minimal valid safety block for deep-scroll tests. */
+const BASE_SAFETY = {
+  maxHashtagsPerRun: 12, maxRunMinutes: 60, scrollsPerHashtag: 5, pageLoadDelayMs: 6000,
+  scrollPauseMs: [1, 2], gapBetweenHashtagsMs: [1, 2], initialDwellMs: [1, 2],
+};
+
+function rootWithSafety(extra) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-"));
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({
+    mcpEndpoint: "http://127.0.0.1:12306/mcp",
+    safety: { ...BASE_SAFETY, ...extra },
+  }));
+  return root;
+}
+
+test("deep-scroll keys default sanely when absent", () => {
+  const g = loadGlobal(rootWithSafety({}));
+  assert.equal(g.safety.scrollMinutesPerHashtag, null, "absent = legacy step mode");
+  assert.equal(g.safety.dryStopAfterScrolls, 10);
+  assert.equal(g.safety.maxPostsPerHashtag, 3000);
+  assert.deepEqual(g.safety.restEveryMs, [150_000, 300_000]);
+  assert.deepEqual(g.safety.restPauseMs, [15_000, 45_000]);
+});
+
+test("scrollMinutesPerHashtag round-trips as a pair", () => {
+  const g = loadGlobal(rootWithSafety({ scrollMinutesPerHashtag: [20, 28] }));
+  assert.deepEqual(g.safety.scrollMinutesPerHashtag, [20, 28]);
+});
+
+test("scrollMinutesPerHashtag rejects bad shapes and the >45min ceiling", () => {
+  assert.throws(() => loadGlobal(rootWithSafety({ scrollMinutesPerHashtag: 20 })), /min, max/);
+  assert.throws(() => loadGlobal(rootWithSafety({ scrollMinutesPerHashtag: [28, 20] })), /min, max/);
+  assert.throws(() => loadGlobal(rootWithSafety({ scrollMinutesPerHashtag: [10, 90] })), /capped at 45/);
+});
+
 test("campaign dates round-trip and are preserved on undefined", () => {
   const root = tmpRoot();
   // Write a business with campaign dates
@@ -188,4 +223,66 @@ test("campaign dates round-trip and are preserved on undefined", () => {
   assert.equal(read2.campaignStart, "2026-08-01", "omitted date preserved existing campaignStart");
   assert.equal(read2.campaignEnd, "2026-08-31", "omitted date preserved existing campaignEnd");
   assert.equal(read2.name, "Updated Name", "name was updated");
+});
+
+/* ---------------- hashtagUrl campaign-date filter ---------------- */
+
+// Decode the FB `filters` param back to the creation_time args object.
+function decodeFilters(url) {
+  const m = new URL(url).searchParams.get("filters");
+  if (!m) return null;
+  const outer = JSON.parse(Buffer.from(m, "base64").toString("utf8"));
+  const wrapper = JSON.parse(outer["rp_creation_time:0"]);
+  return { name: wrapper.name, args: JSON.parse(wrapper.args) };
+}
+
+test("hashtagUrl adds a day-granularity FB date filter for a full campaign window", async () => {
+  const { hashtagUrl } = await import("../src/config/index.js");
+  const window = { start: new Date("2026-06-01"), end: new Date("2026-08-27") };
+  const url = hashtagUrl({ platform: "facebook", value: "weddingsph" }, window);
+  assert.ok(url.startsWith("https://www.facebook.com/search/posts?q=%23weddingsph"));
+  const f = decodeFilters(url);
+  assert.equal(f.name, "creation_time");
+  assert.deepEqual(f.args, {
+    start_year: "2026",
+    start_month: "2026-6",
+    start_day: "2026-6-1",
+    end_year: "2026",
+    end_month: "2026-8",
+    end_day: "2026-8-27",
+  });
+});
+
+test("hashtagUrl leaves FB unfiltered without a complete window", async () => {
+  const { hashtagUrl } = await import("../src/config/index.js");
+  const plain = "https://www.facebook.com/search/posts?q=%23weddingsph";
+  const h = { platform: "facebook", value: "weddingsph" };
+  assert.equal(hashtagUrl(h), plain);
+  assert.equal(hashtagUrl(h, { start: null, end: null }), plain);
+  assert.equal(hashtagUrl(h, { start: new Date("2026-06-01"), end: null }), plain);
+});
+
+test("hashtagUrl ignores the window on Instagram", async () => {
+  const { hashtagUrl } = await import("../src/config/index.js");
+  const window = { start: new Date("2026-06-01"), end: new Date("2026-08-27") };
+  assert.equal(
+    hashtagUrl({ platform: "instagram", value: "weddingsph" }, window),
+    "https://www.instagram.com/explore/tags/weddingsph/",
+  );
+});
+
+test("loadGlobal defaults the enrichment and cross-platform gap pairs", () => {
+  const root = tmpRoot();
+  const cfg = loadGlobal(root);
+  assert.deepEqual(cfg.safety.postVisitGapMs, [45000, 120000]);
+  assert.deepEqual(cfg.safety.crossPlatformGapMs, [60000, 150000]);
+});
+
+test("loadGlobal rejects malformed postVisitGapMs", () => {
+  const root = tmpRoot();
+  const file = path.join(root, "config.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  raw.safety.postVisitGapMs = [5000];
+  fs.writeFileSync(file, JSON.stringify(raw));
+  assert.throws(() => loadGlobal(root), /postVisitGapMs/);
 });

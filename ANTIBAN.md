@@ -39,6 +39,88 @@ tab), and the fixed, multi-minute gap is preserved — behavior stays human-like
 cannot produce a parallel-scraping signature. If the tab-navigation capability becomes
 unavailable, the tool degrades to plain sequential visits (no preload) automatically.
 
+**Deep scroll mode — going past a handful of scrolls, without changing the posture.**
+When `safety.scrollMinutesPerHashtag` is set (a `[min, max]` pair, hard-capped at 45),
+each hashtag scrolls for a randomized time budget instead of a fixed step count. This
+exists because ~5 scrolls yields under 100 posts, and campaign tallies may need
+hundreds-to-thousands per hashtag. The rules that make it as safe as a long scroll can be:
+
+- **The pace never changes.** Steps and pauses are identical to short mode (partial
+  viewport, 3–9 s jitter). Depth comes from duration, not speed — the request *rate*
+  stays where it was; only the session length grows.
+- **Reading breaks.** Every ~2.5–5 minutes (randomized) the scroll pauses for a
+  randomized 15–45 s "reading" rest. An unbroken 25-minute flick at a metronomic
+  3–9 s cadence is itself a rhythm signature; humans stop and read.
+- **Stop at the known frontier.** The collector loads the campaign's already-recorded
+  post ids for the hashtag before scrolling. After `dryStopAfterScrolls` consecutive
+  steps (default 10) that surface zero posts *new to the campaign* — not merely new to
+  this run — the hashtag ends early. This is what makes a months-long campaign cheap:
+  day 1 spends the full budget backfilling, but day 30's feed is mostly posts already
+  archived, so the scroll ends within minutes of passing yesterday's frontier. Requests
+  are spent only where unknown posts are; re-scrolling captured history is risk with
+  zero data gain. (The threshold is consecutive steps, not first overlap, because the
+  feed interleaves popular older posts among recent ones.)
+- **Per-hashtag ceiling.** `maxPostsPerHashtag` (default 3000) ends the hashtag once
+  the target is met, so a single viral tag can't eat the whole run's request budget.
+- **Danger checks mid-scroll, not just at the ends.** The login-wall/checkpoint/
+  "try again later" probe runs every ~10 steps; a soft block 4 minutes into a
+  25-minute scroll aborts the run then, per §7.
+- **Fewer hashtags per run, same daily coverage.** Deep runs should lower
+  `maxHashtagsPerRun` (default config now pairs 20–28 min scrolls with 6 tags and a
+  210-minute run budget); the least-recently-visited rotation (§6) still covers a
+  larger hashtag list across days. Total daily volume is the number that matters.
+
+**What deep mode does NOT promise:** 10,000 posts per hashtag per day is not safely
+reachable. At human pace the feed paginates roughly 12–24 posts per fetch every few
+steps, so a 20–28 minute scroll realistically surfaces ~500–2,000 posts per hashtag —
+and Instagram often stops serving new results well before that. Reaching for more
+means faster scrolling (a rate signature) or longer/parallel sessions (a volume
+signature); both are exactly what gets accounts flagged. If the campaign needs more
+volume, add *days*, not speed.
+
+**Passive network capture adds no requests — on both platforms.** Rich fields
+(username, full caption, like/reaction and comment counts, image, posted-at,
+and on Facebook the real permalink) are read from the responses the page was
+already going to receive (via the extension's debugger capture, started before
+navigation) and from JSON already embedded in the page. Nothing is re-fetched,
+replayed or requested twice; the observable network behavior of a run is
+identical with capture on or off.
+
+**Facebook's DOM gaps are closed passively, never by interacting.** Facebook
+search cards expose no post URL in the DOM (real permalinks are only written
+into hrefs on hover) and truncate captions at "See more". Both a hover and a
+"See more" click are interactions an automated session should not perform —
+hundreds of expand-clicks per run is exactly the kind of scripted interaction
+pattern behavioral detection looks for. Instead, the permalink (`wwwURL`) and
+the full untruncated message text are taken from the GraphQL search responses
+the page already received. Zero clicks, zero hovers, zero extra requests.
+
+**Platform alternation: better spacing AND a shorter run.** Visit order
+interleaves the two platforms (IG, FB, IG, FB…). Facebook cannot observe an
+Instagram scroll and vice versa, so while one platform is being scrolled the
+other is resting — each platform sees ~15–25 minutes between its own visits,
+far more than any gap provided. That earned rest is why a platform *switch*
+takes only a short randomized breather (`crossPlatformGapMs`, 1–2.5 min) while
+consecutive same-platform visits keep the full `gapBetweenHashtagsMs`
+(3–7 min). Enrichment post-visits likewise pace on their own
+`postVisitGapMs` (45–120 s): a human clicking through a few posts does not
+freeze for five minutes between them, and the old behavior of reusing the
+hashtag gap there was borrowed pacing, not safety. None of this changes scroll
+speed, rests, request counts, or the one-active-tab rule.
+
+**React-prop reads are passive; Facebook's date filter is just a URL.** Two later
+additions, both inside the existing posture. (1) On Instagram, each grid card's
+React fiber props are read in-page as a fallback for fields capture missed
+(currently the poster's username) — a bounded, read-only walk of JS objects the
+page already holds: no events, no requests, nothing observable. Facebook gets no
+such read because its React build exposes no fiber internals on DOM nodes
+(probed live 2026-08-27). (2) When a business has campaign dates, the Facebook
+search URL carries FB's own `rp_creation_time` filter (the same one its UI's
+"Date posted" emits), so results are pre-narrowed to the campaign window. This
+*reduces* wasted requests — the same single navigation, fewer scrolls burned on
+years-old posts. Instagram's search has no date facility; its window filtering
+stays post-hoc on `taken_at`.
+
 **Rich post enrichment is capped and careful.** When hashtag scrolling captures posts
 missing key fields (username, caption, posted-at timestamp — common on initial load),
 a capped post-visit phase enriches them by visiting individual post pages. The budget

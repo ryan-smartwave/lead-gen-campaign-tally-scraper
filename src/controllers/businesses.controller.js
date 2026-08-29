@@ -22,7 +22,7 @@ export async function list(_req, res) {
 
 export async function create(req, res) {
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  if (!name) throw new ApiError(400, "invalid", "Give the business a name.");
+  if (!name) throw new ApiError(400, "invalid", "Give the campaign a name.");
 
   const slug = req.body?.slug || slugify(name);
   if (!slug) {
@@ -33,7 +33,7 @@ export async function create(req, res) {
     );
   }
   if (!req.body?.slug && listBusinesses().some((b) => b.slug === slug)) {
-    throw new ApiError(409, "exists", `A business with the id "${slug}" already exists.`);
+    throw new ApiError(409, "exists", `A campaign with the id "${slug}" already exists.`);
   }
 
   try {
@@ -54,7 +54,7 @@ export async function create(req, res) {
 export async function update(req, res) {
   const { slug } = req.params;
   const existing = listBusinesses().find((b) => b.slug === slug);
-  if (!existing) throw new ApiError(404, "not_found", `No business with the id "${slug}".`);
+  if (!existing) throw new ApiError(404, "not_found", `No campaign with the id "${slug}".`);
 
   const name =
     typeof req.body?.name === "string" && req.body.name.trim()
@@ -84,12 +84,12 @@ export async function update(req, res) {
 export async function remove(req, res) {
   const { slug } = req.params;
   if (!listBusinesses().some((b) => b.slug === slug)) {
-    throw new ApiError(404, "not_found", `No business with the id "${slug}".`);
+    throw new ApiError(404, "not_found", `No campaign with the id "${slug}".`);
   }
   deleteBusiness(slug);
   await refreshBusinessMirror().catch(() => {});
   res.json({
     deleted: slug,
-    note: "Collected results were left in place; re-creating this business with the same id restores its history.",
+    note: "Collected results were left in place; re-creating this campaign with the same id restores its history.",
   });
 }

@@ -24,3 +24,14 @@ test("no preload after a downgrade", () => {
 test("no preload on the last hashtag", () => {
   assert.equal(planNext({ index: 1, targets, caps: { tabs: true }, downgraded: false }).preload, false);
 });
+
+test("preload URL carries the FB campaign-date filter when a window is given", () => {
+  const fbTargets = [
+    { platform: "instagram", value: "a" },
+    { platform: "facebook", value: "weddingsph" },
+  ];
+  const window = { start: new Date("2026-06-01"), end: new Date("2026-08-27") };
+  const p = planNext({ index: 0, targets: fbTargets, caps: { tabs: true }, downgraded: false, window });
+  assert.equal(p.preload, true);
+  assert.match(p.url, /facebook\.com\/search\/posts\?q=%23weddingsph&filters=/);
+});

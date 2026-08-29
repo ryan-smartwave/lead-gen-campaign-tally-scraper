@@ -1,14 +1,40 @@
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { connect, disconnect, evalJs, sleep, detectCaps, screenshot as mcpScreenshot } from "./mcp.service.js";
+import {
+  connect,
+  disconnect,
+  evalJs,
+  sleep,
+  detectCaps,
+  screenshot as mcpScreenshot,
+  startNetCapture,
+  stopNetCapture,
+  resumeNetCapture,
+  switchTab,
+  closeTabs,
+} from "./mcp.service.js";
 import { IG_EXTRACT, FB_EXTRACT } from "./extract.service.js";
-import { IG_CAPTURE_INSTALL, IG_CAPTURE_HARVEST, normalizeCaptured, mergeRecords } from "./capture.service.js";
+import {
+  IG_CAPTURE_INSTALL,
+  IG_CAPTURE_HARVEST,
+  IG_CAPTURE_DRAIN,
+  FB_CAPTURE_HARVEST,
+  FB_CAPTURE_DRAIN,
+  normalizeCaptured,
+  normalizeFbCaptured,
+  mergeRecords,
+  mergeFbRecords,
+  blobsFromNetworkCapture,
+  decodeCandidateUrls,
+  decodeImageUrl,
+} from "./capture.service.js";
 import { selectForEnrichment, enrichPost } from "./enrich.service.js";
 import { createJournal } from "./journal.service.js";
 import { captureIncident } from "./incident.service.js";
 import { planNext } from "./pipeline.service.js";
 import { parseWindow } from "../utils/freshness.js";
+import { extractOtherHashtags } from "../utils/hashtags.js";
 import { createFileStore } from "../stores/fileStore.js";
 import {
   rand,
@@ -117,62 +143,270 @@ export function releaseLock(lockPath) {
 
 /* ---------------- collection ---------------- */
 
+/**
+ * Open `url` with passive network capture running, so the page's initial API
+ * burst is recorded (Instagram serves the grid data over /api/graphql at load;
+ * an in-page patch installed afterwards can never see it). Returns the capture
+ * tab id (or true if the extension didn't report one) when capture is live,
+ * null when it isn't — in which case the caller must navigate itself.
+ */
+export async function openWithCapture(client, url, journal, retryDelayMs = 2000) {
+  // One retry: real runs show the start refusing transiently (a previous
+  // capture still detaching), and a silent null here costs every rich field
+  // for the visit — Instagram has no other passive channel (the page binds
+  // fetch at bootstrap, so the in-page hook never sees its traffic).
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const { tabId } = await startNetCapture(client, url);
+      // The extension may open the page in a fresh tab that isn't focused;
+      // evalJs and the danger checks act on the ACTIVE tab, so make it so.
+      if (tabId != null) await switchTab(client, tabId).catch(() => {});
+      journal?.log?.("capture_start", { detail: { url, tabId, attempt } });
+      return tabId ?? true;
+    } catch (err) {
+      // Loud, not silent: a missing capture_start in the journal was the only
+      // trace of why a whole visit had no usernames/likes/captions.
+      journal?.log?.("capture_start_failed", {
+        detail: { url, attempt, message: err?.message?.slice(0, 200) },
+      });
+      if (attempt === 1) await sleep(retryDelayMs);
+    }
+  }
+  return null; // capture unavailable — plain navigation still works
+}
+
 export async function collect(client, h, safety, ctx = {}) {
-  const { journal, preloaded } = ctx;
+  const { journal, preloaded, seenIds, window = null } = ctx;
+  // Number = capture live in that tab; true = live, tab unknown; null = none.
+  let captureTab = preloaded ? (h.__captureTab ?? null) : null;
   if (!preloaded) {
-    await navigate(client, hashtagUrl(h));
+    // Both platforms serve their result data over /api/graphql, so both get
+    // the passive debugger capture wrapped around navigation.
+    captureTab = await openWithCapture(client, hashtagUrl(h, window), journal);
+    if (captureTab == null) await navigate(client, hashtagUrl(h, window));
     journal?.log?.("navigate", { platform: h.platform, hashtag: h.value });
   } else {
-    // The page is already loaded in the one active tab from the preceding
-    // gap's preload — nothing to navigate, just note the handoff.
+    // The page is already loaded from the preceding gap's preload — nothing to
+    // navigate. But minutes have passed since the preload focused our tab, and
+    // evalJs acts on the ACTIVE tab: if the user opened or focused anything in
+    // the meantime, the probe below runs against their tab (a real run died on
+    // "Cannot access a chrome:// URL" exactly this way). Re-front ours first.
+    if (typeof captureTab === "number") await switchTab(client, captureTab).catch(() => {});
     journal?.log?.("tab_switch", { platform: h.platform, hashtag: h.value });
   }
   await sleep(safety.pageLoadDelayMs);
-  await assertSafe(client, `${h.platform}#${h.value} load`);
-
-  if (h.platform === "instagram") {
-    // Idempotent (guarded by `if(!window.__swCapture)`), so calling it again
-    // for an already-preloaded page is harmless.
-    await evalJs(client, IG_CAPTURE_INSTALL).catch(() => {});
+  try {
+    await assertSafe(client, `${h.platform}#${h.value} load`);
+  } catch (err) {
+    // A BlockError is a platform danger sign — never swallowed. Anything else
+    // here is the probe itself failing, usually because focus drifted to a tab
+    // we cannot script (chrome://). If we know our tab, re-front it and retry
+    // once; otherwise the hashtag fails as before.
+    if (err instanceof BlockError || typeof captureTab !== "number") throw err;
+    journal?.log?.("refocus", {
+      platform: h.platform,
+      hashtag: h.value,
+      detail: { message: err?.message?.slice(0, 160) },
+    });
+    await switchTab(client, captureTab);
+    await sleep(1000);
+    await assertSafe(client, `${h.platform}#${h.value} load (refocused)`);
   }
+
+  // Belt-and-braces alongside network capture: catches scroll-triggered
+  // requests if capture could not start. Idempotent (guarded by
+  // `if(!window.__swCapture)`), so calling it again is harmless. The keep()
+  // filter matches both platforms' /api/graphql traffic.
+  await evalJs(client, IG_CAPTURE_INSTALL).catch(() => {});
   await jitter(safety.initialDwellMs);
   journal?.log?.("dwell", { platform: h.platform, hashtag: h.value });
+
+  // Extract incrementally — before scrolling and again after every step. Both
+  // platforms virtualize their feeds (posts scrolled past leave the DOM), so a
+  // single extraction at the end sees only the last viewport-and-a-bit and
+  // loses most of what scrolled by. Reading the DOM costs no network requests.
+  const extractScript = h.platform === "instagram" ? IG_EXTRACT : FB_EXTRACT;
+  const byId = new Map();
+  // absorb returns how many posts this read added that the CAMPAIGN hasn't
+  // recorded in any previous run (falling back to run-local newness when the
+  // store gave no history). This is what the dry-stop counts: on day 30 the
+  // top of a hashtag feed is mostly posts already archived, and a scroll that
+  // keeps burning requests on them is spending risk on nothing — the frontier
+  // between known and unknown posts is where scrolling should end.
+  const known = seenIds instanceof Set ? seenIds : null;
+  const absorb = (r) => {
+    if (r?.loggedOut) {
+      throw new BlockError(`not logged in to ${h.platform}`, {
+        reason: "login_wall",
+        url: hashtagUrl(h),
+      });
+    }
+    let unseen = 0;
+    for (const p of r?.posts ?? []) {
+      if (byId.has(p.id)) continue;
+      byId.set(p.id, p);
+      if (!known || !known.has(p.id)) unseen++;
+    }
+    return unseen;
+  };
+  absorb(await evalJs(client, extractScript));
+
+  // Deep mode: a [min, max] minutes pair budgets the scroll by time instead of
+  // a step count. The debugger capture is the ONLY passive channel that sees
+  // Instagram's pagination (the page binds fetch at bootstrap, so the in-page
+  // hook is blind to IG traffic), so it must span the whole scroll — but a
+  // 20+ minute capture stopped once would hand back a payload the bridge
+  // guts. So it is CYCLED: at every drain point the capture is stopped, its
+  // ~1 minute of bodies collected, and capture restarted on the same tab.
+  // Purely observational either way — not one extra request in any cycle.
+  const deep = Array.isArray(safety.scrollMinutesPerHashtag);
+  const netBlobs = [];
+  let captureLive = captureTab != null;
+  const drainCapture = async (resume) => {
+    if (!captureLive) return;
+    captureLive = false;
+    try {
+      netBlobs.push(...blobsFromNetworkCapture(await stopNetCapture(client)));
+    } catch {
+      /* capture already expired or detached — nothing to collect this cycle */
+    }
+    if (!resume) return;
+    try {
+      await resumeNetCapture(client);
+      captureLive = true;
+    } catch (err) {
+      // Restart unsupported or refused: keep what we have. Later drains
+      // no-op and the visit degrades to initial-burst coverage only.
+      journal?.log?.("capture_resume_failed", {
+        detail: { message: err?.message?.slice(0, 200) },
+      });
+    }
+  };
+
+  const minis = []; // accumulated drain batches (arrays of compact records)
+  let dryStreak = 0;
+  let drains = 0;
+  const dryLimit = safety.dryStopAfterScrolls ?? 0; // 0 = never stop on a dry feed
+  const postCap = safety.maxPostsPerHashtag ?? 0; // 0 = uncapped
+  const DRAIN_EVERY = 10; // scroll steps between drains (~1 min at the default pause)
+
   await humanScroll(
     client,
-    { steps: safety.scrollsPerHashtag, scrollPauseMs: safety.scrollPauseMs },
+    {
+      steps: safety.scrollsPerHashtag,
+      minutes: deep ? safety.scrollMinutesPerHashtag : null,
+      scrollPauseMs: safety.scrollPauseMs,
+      restEveryMs: safety.restEveryMs,
+      restPauseMs: safety.restPauseMs,
+    },
     journal,
+    async (i) => {
+      const unseen = absorb(await evalJs(client, extractScript).catch(() => null)) ?? 0;
+      dryStreak = unseen > 0 ? 0 : dryStreak + 1;
+      if (deep && (i + 1) % DRAIN_EVERY === 0) {
+        // Collect this cycle's network bodies and restart capture (see above).
+        await drainCapture(true);
+        try {
+          const ig = h.platform === "instagram";
+          const raw = await evalJs(client, ig ? IG_CAPTURE_DRAIN : FB_CAPTURE_DRAIN);
+          // IG image urls decode here; FB records decode inside normalizeFbCaptured.
+          const recs = ig
+            ? decodeCandidateUrls(raw?.records)
+            : Array.isArray(raw?.records) ? raw.records : [];
+          if (recs.length) minis.push(recs);
+          drains++;
+        } catch {
+          /* a failed drain only loses that slice — the final harvest still runs */
+        }
+        // A soft block that appears 4 minutes into a 25-minute scroll must
+        // abort then, not when the scroll ends. Throws BlockError on danger.
+        await assertSafe(client, `${h.platform}#${h.value} mid-scroll`);
+      }
+      if (dryLimit && dryStreak >= dryLimit) {
+        // The feed stopped serving new posts — exhausted or soft-limited.
+        // Continuing to hammer an empty feed gains nothing and looks like a
+        // bot that can't take a hint, so the hashtag ends early.
+        journal?.log?.("scroll_dry", {
+          platform: h.platform,
+          hashtag: h.value,
+          detail: { steps: i + 1, posts: byId.size },
+        });
+        return false;
+      }
+      if (postCap && byId.size >= postCap) {
+        journal?.log?.("scroll_target", {
+          platform: h.platform,
+          hashtag: h.value,
+          detail: { steps: i + 1, posts: byId.size },
+        });
+        return false;
+      }
+    },
   );
   await assertSafe(client, `${h.platform}#${h.value} after-scroll`);
-
-  const res = await evalJs(client, h.platform === "instagram" ? IG_EXTRACT : FB_EXTRACT);
-  if (res.loggedOut) {
-    throw new BlockError(`not logged in to ${h.platform}`, {
-      reason: "login_wall",
-      url: hashtagUrl(h),
-    });
-  }
+  const res = { posts: [...byId.values()] };
 
   if (h.platform === "instagram") {
-    let captured = [];
+    // Sources merged by shortcode with richer sightings winning: the network
+    // capture's unredacted bodies (initial burst + every scroll cycle), the
+    // per-drain batches, and a final in-page harvest (remaining ring buffer +
+    // inline Relay JSON — raw blobs can't be shipped, the bridge truncates them).
+    await drainCapture(false); // final collection, no restart
+    let finalMinis = [];
     try {
       const raw = await evalJs(client, IG_CAPTURE_HARVEST);
-      captured = normalizeCaptured(raw);
+      finalMinis = decodeCandidateUrls(raw?.records);
     } catch {
-      /* degrade to DOM-only */
+      /* degrade gracefully */
     }
+    const captured = normalizeCaptured({ responses: [...netBlobs, ...minis, finalMinis], inline: [] });
     journal?.log?.("capture_harvest", {
       platform: h.platform,
       hashtag: h.value,
-      detail: { records: captured.length },
+      detail: {
+        records: captured.length,
+        inPage: minis.reduce((n, b) => n + b.length, finalMinis.length),
+        drains,
+        netBlobs: netBlobs.length,
+      },
     });
-    return mergeRecords(res.posts, captured);
+    // The capture opened its own tab; close it so daily runs don't pile up
+    // dozens of leftover automation tabs in the user's browser.
+    if (typeof captureTab === "number") {
+      await closeTabs(client, [captureTab]).catch(() => {});
+    }
+    const domPosts = res.posts.map((p) => ({ ...p, imageUrl: decodeImageUrl(p.imageUrl) }));
+    return mergeRecords(domPosts, captured);
   }
-  journal?.log?.("extract", {
+
+  // Facebook: the same two-source merge, matched by message text instead of
+  // shortcode (FB cards expose no stable URL in the DOM — the captured
+  // stories carry the real permalink, the full past-"See more" message,
+  // actor, reaction/comment counts and image).
+  await drainCapture(false); // final collection, no restart
+  let finalMinis = [];
+  try {
+    const raw = await evalJs(client, FB_CAPTURE_HARVEST);
+    if (Array.isArray(raw?.records)) finalMinis = raw.records;
+  } catch {
+    /* degrade gracefully — DOM-only records still count */
+  }
+  const captured = normalizeFbCaptured({ responses: [...netBlobs, ...minis, finalMinis] });
+  journal?.log?.("capture_harvest", {
     platform: h.platform,
     hashtag: h.value,
-    detail: { posts: res.posts.length },
+    detail: {
+      records: captured.length,
+      inPage: minis.reduce((n, b) => n + b.length, finalMinis.length),
+      drains,
+      netBlobs: netBlobs.length,
+    },
   });
-  return res.posts;
+  if (typeof captureTab === "number") {
+    await closeTabs(client, [captureTab]).catch(() => {});
+  }
+  const domPosts = res.posts.map((p) => ({ ...p, imageUrl: decodeImageUrl(p.imageUrl) }));
+  return mergeFbRecords(domPosts, captured);
 }
 
 /* ---------------- target selection ---------------- */
@@ -189,8 +423,43 @@ export async function collect(client, h, safety, ctx = {}) {
  * that cannot answer, falls back to the shuffled slice: rotation is a
  * refinement, never something that can block a run.
  */
+/**
+ * Interleave the two platforms so consecutive visits alternate whenever both
+ * have targets left. Each platform then rests for the other platform's whole
+ * scroll between its own visits — better per-platform spacing than any gap
+ * buys — which is what makes the short cross-platform gap safe. Relative
+ * order within a platform is preserved (callers shuffle first), and when the
+ * counts are uneven the surplus lands at the end as same-platform neighbors,
+ * which the gap picker charges the full same-platform gap for.
+ */
+export function alternatePlatforms(targets) {
+  const groups = new Map();
+  for (const t of targets) {
+    if (!groups.has(t.platform)) groups.set(t.platform, []);
+    groups.get(t.platform).push(t);
+  }
+  const lists = [...groups.values()].sort((a, b) => b.length - a.length);
+  const out = [];
+  for (let i = 0; i < (lists[0]?.length ?? 0); i++) {
+    for (const list of lists) if (i < list.length) out.push(list[i]);
+  }
+  return out;
+}
+
+/**
+ * The gap range before visiting `next`: switching platforms takes the short
+ * breather (the platform being left is resting either way); staying on the
+ * same platform keeps the full search-pacing gap.
+ */
+export function gapRangeFor(current, next, safety) {
+  const cross = current?.platform !== next?.platform;
+  return cross && safety.crossPlatformGapMs
+    ? safety.crossPlatformGapMs
+    : safety.gapBetweenHashtagsMs;
+}
+
 export async function selectTargets(hashtags, cap, store) {
-  if (hashtags.length <= cap) return shuffle(hashtags);
+  if (hashtags.length <= cap) return alternatePlatforms(shuffle(hashtags));
 
   let visits = null;
   try {
@@ -198,7 +467,7 @@ export async function selectTargets(hashtags, cap, store) {
   } catch {
     visits = null;
   }
-  if (!visits) return shuffle(hashtags).slice(0, cap);
+  if (!visits) return alternatePlatforms(shuffle(hashtags).slice(0, cap));
 
   // ISO timestamps compare lexically; "" sorts never-visited first. The sort is
   // stable, so pre-shuffling randomizes the order among equal visit times.
@@ -206,7 +475,7 @@ export async function selectTargets(hashtags, cap, store) {
   const chosen = shuffle(hashtags)
     .sort((a, b) => (last(a) < last(b) ? -1 : last(a) > last(b) ? 1 : 0))
     .slice(0, cap);
-  return shuffle(chosen);
+  return alternatePlatforms(shuffle(chosen));
 }
 
 /* ---------------- the run ---------------- */
@@ -316,7 +585,23 @@ export async function run({
       emit("hashtag_started", { platform: h.platform, hashtag: h.value, visitSeq: i + 1 });
 
       try {
-        const posts = await co(client, h, S, { journal, caps, preloaded: h.__preloaded });
+        // The campaign's known post ids for this hashtag, so the collector can
+        // stop at the frontier of what's new. Best-effort: a store without
+        // history (or a failing lookup) just means the full scroll budget runs.
+        let seenIds = null;
+        try {
+          const ids = await results.seenIds?.(h);
+          if (Array.isArray(ids)) seenIds = new Set(ids);
+        } catch {
+          seenIds = null;
+        }
+        const posts = await co(client, h, S, { journal, caps, preloaded: h.__preloaded, seenIds, window });
+        for (const p of posts) {
+          p.otherHashtags = extractOtherHashtags(
+            [p.caption, p.text, p.preview].filter(Boolean).join(" "),
+            h.value,
+          );
+        }
         const { newCount, freshCount, cumulative } = await results.record(h, posts, runAt, window);
         const rowStatus = posts.length ? "ok" : "empty";
         await results.writeRow(h, runAt, {
@@ -406,13 +691,15 @@ export async function run({
         // ANTIBAN.md requires exactly one active tab at all times) and, for
         // an Instagram next-target, arm capture immediately so it is
         // installed before the feed's API calls fire during the gap.
-        const plan = planNext({ index: i, targets, caps, downgraded });
+        const plan = planNext({ index: i, targets, caps, downgraded, window });
         if (plan.preload) {
           try {
-            await navigate(client, plan.url);
-            if (targets[i + 1].platform === "instagram") {
-              await evalJs(client, IG_CAPTURE_INSTALL);
-            }
+            // Capture must be running when the page loads — that is when both
+            // platforms fetch their result data. openWithCapture navigates.
+            const capTab = await openWithCapture(client, plan.url, journal);
+            if (capTab == null) await navigate(client, plan.url);
+            targets[i + 1].__captureTab = capTab;
+            await evalJs(client, IG_CAPTURE_INSTALL).catch(() => {});
             targets[i + 1].__preloaded = true;
             journal?.log?.("preload", { detail: { url: plan.url } });
           } catch {
@@ -422,8 +709,11 @@ export async function run({
             journal?.log?.("downgrade", { detail: { reason: "preload_failed" } });
           }
         }
-        const gapMs = rand(S.gapBetweenHashtagsMs[0], S.gapBetweenHashtagsMs[1]);
-        journal?.log?.("gap", { detail: { ms: gapMs } });
+        const gapRange = gapRangeFor(targets[i], targets[i + 1], S);
+        const gapMs = rand(gapRange[0], gapRange[1]);
+        journal?.log?.("gap", {
+          detail: { ms: gapMs, cross: targets[i].platform !== targets[i + 1].platform },
+        });
         emit("waiting", {
           seconds: Math.round(gapMs / 1000),
           next: asTarget(targets[i + 1]),
@@ -462,9 +752,18 @@ export async function run({
           pageLoadDelayMs: S.pageLoadDelayMs,
           dwellMs: rand(S.initialDwellMs[0], S.initialDwellMs[1]),
           journal,
+          openWithCapture: (cl, url) => openWithCapture(cl, url, journal),
+          stopCapture: async (cl) => blobsFromNetworkCapture(await stopNetCapture(cl)),
+          closeTab: (cl, tabId) => closeTabs(cl, [tabId]),
         };
         try {
           const enriched = await ep(client, rec, enrichDeps);
+          // Enrichment may be what finally supplies the caption, so the
+          // other-hashtags derivation reruns on the merged record.
+          enriched.otherHashtags = extractOtherHashtags(
+            [enriched.caption, enriched.text, enriched.preview].filter(Boolean).join(" "),
+            rec.hashtag.value,
+          );
           // NOT results.record: a dedup-by-id store already saw this post's
           // id from the main loop and would silently drop a second `record`
           // call. `enrich` merges the extra fields into what's already there.
@@ -500,7 +799,10 @@ export async function run({
           }
           journal?.log?.("post_visit", { detail: { id: rec.id, error: err.message } });
         }
-        const gapMs = rand(S.gapBetweenHashtagsMs[0], S.gapBetweenHashtagsMs[1]);
+        // Post visits get their own, much shorter pacing — a human clicking
+        // through a few posts does not freeze for five minutes between them.
+        const visitGap = S.postVisitGapMs ?? S.gapBetweenHashtagsMs;
+        const gapMs = rand(visitGap[0], visitGap[1]);
         await delay(gapMs, undefined, { signal }).catch(() => {});
       }
     }
