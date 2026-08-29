@@ -1,7 +1,7 @@
 /**
- * Whether one run can visit everything a business tracks.
+ * Whether one run can visit everything a campaign tracks.
  *
- * `maxHashtagsPerRun` is a safety cap, so a business tracking more hashtags
+ * `maxHashtagsPerRun` is a safety cap, so a campaign tracking more hashtags
  * than that is not an error — runs rotate through the least recently scraped —
  * but it must never be silent: the rotation leaves per-day gaps in each
  * hashtag's series, and an operator reading the charts deserves to know why.

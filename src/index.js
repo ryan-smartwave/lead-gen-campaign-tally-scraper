@@ -1,8 +1,8 @@
 import { setMaxListeners } from "node:events";
 import { loadEnv, serverConfig } from "./config/env.js";
-import { listBusinesses } from "./config/index.js";
+import { listCampaigns } from "./config/index.js";
 import { isDbConfigured, closeDb } from "./db/pool.js";
-import { isRunning, stop, refreshBusinessMirror } from "./services/supervisor.service.js";
+import { isRunning, stop, refreshCampaignMirror } from "./services/supervisor.service.js";
 import { campaignDay } from "./utils/day.js";
 import { createApp } from "./app.js";
 
@@ -21,10 +21,10 @@ const { host, port } = serverConfig();
 const server = createApp().listen(port, host, () => {
   console.log(`scraper service listening on http://${host}:${port}`);
   console.log(`  database:     ${isDbConfigured() ? "configured" : "NOT configured — set DATABASE_URL"}`);
-  console.log(`  businesses:   ${listBusinesses().length}`);
+  console.log(`  campaigns:   ${listCampaigns().length}`);
   console.log(`  campaign day: ${campaignDay()}`);
-  // Best-effort, so the UI can read businesses without filesystem access.
-  void refreshBusinessMirror().catch(() => {});
+  // Best-effort, so the UI can read campaigns without filesystem access.
+  void refreshCampaignMirror().catch(() => {});
 });
 
 /**

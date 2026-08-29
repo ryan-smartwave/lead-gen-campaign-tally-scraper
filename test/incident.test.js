@@ -11,7 +11,7 @@ test("writes incident.json with reason, url and journal tail", async () => {
   const journal = { tail: () => [{ action: "navigate" }, { action: "danger" }] };
   const err = new BlockError("checkpoint at x", { reason: "checkpoint", url: "https://x/checkpoint" });
   const { incidentDir } = await captureIncident({
-    root, runId: "2026-08-25T00:00:00.000Z", business: "b", error: err, journal,
+    root, runId: "2026-08-25T00:00:00.000Z", campaign: "b", error: err, journal,
     client: { fake: true }, caps: { screenshot: false },
     deps: { evalJs: async () => "PAGE TEXT" },
   });
@@ -28,7 +28,7 @@ test("a failing page-text grab still yields a bundle", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "inc-"));
   const journal = { tail: () => [] };
   const { incidentDir } = await captureIncident({
-    root, runId: "2026-08-25T00:00:00.000Z", business: "b",
+    root, runId: "2026-08-25T00:00:00.000Z", campaign: "b",
     error: new Error("plain"), journal, client: {}, caps: { screenshot: false },
     deps: { evalJs: async () => { throw new Error("no page"); } },
   });

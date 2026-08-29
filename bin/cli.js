@@ -1,6 +1,6 @@
 import path from "node:path";
 import { setMaxListeners } from "node:events";
-import { loadConfig, listBusinesses, ROOT } from "../src/config/index.js";
+import { loadConfig, listCampaigns, ROOT } from "../src/config/index.js";
 import { run, check } from "../src/services/run.service.js";
 
 /**
@@ -19,7 +19,7 @@ function printer(config) {
     switch (e.type) {
       case "run_started":
         console.log(
-          `[${e.at}] campaign "${e.campaign}" — ${e.targets.length} hashtags, budget ${e.budgetMinutes} min`,
+          `[${e.at}] campaign "${e.campaignName}" — ${e.targets.length} hashtags, budget ${e.budgetMinutes} min`,
         );
         break;
       case "hashtag_done":
@@ -63,22 +63,22 @@ const flag = (name) => {
   const i = args.indexOf(name);
   return i === -1 ? undefined : args[i + 1];
 };
-const mode = args.find((a) => a.startsWith("--") && a !== "--business") ?? "--run";
-const business = flag("--business");
+const mode = args.find((a) => a.startsWith("--") && a !== "--campaign") ?? "--run";
+const campaign = flag("--campaign");
 
 if (mode === "--list") {
-  const all = listBusinesses();
+  const all = listCampaigns();
   if (all.length === 0) {
-    console.log("No businesses defined. Add one in businesses/<slug>.json or via the web app.");
+    console.log("No campaigns defined. Add one in campaigns/<slug>.json or via the web app.");
   } else {
-    console.log(`${all.length} business(es):`);
+    console.log(`${all.length} campaign(es):`);
     for (const b of all) {
       console.log(`  ${b.slug.padEnd(28)} ${b.name}  (${b.hashtags.length} hashtags)`);
     }
   }
 } else if (mode === "--check") {
   (async () => {
-    const config = loadConfig({ business });
+    const config = loadConfig({ campaign });
     console.log(`connecting to ${config.mcpEndpoint} ...`);
     const { toolCount, tools } = await check({ config });
     console.log(`connected — ${toolCount} tools available:`);
@@ -92,7 +92,7 @@ if (mode === "--list") {
   });
 } else {
   (async () => {
-    const config = loadConfig({ business });
+    const config = loadConfig({ campaign });
     await run({ config, onEvent: printer(config), source: "cli" });
   })().catch((err) => {
     console.error(err.message);

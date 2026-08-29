@@ -11,7 +11,7 @@ test("sanitizeRunId strips characters illegal on Windows", () => {
 
 test("log appends ordered JSONL and tail reads the last N", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jrnl-"));
-  const j = createJournal({ root, runId: "2026-08-25T00:00:00.000Z", business: "b", retentionDays: 30 });
+  const j = createJournal({ root, runId: "2026-08-25T00:00:00.000Z", campaign: "b", retentionDays: 30 });
   j.log("navigate", { platform: "instagram", hashtag: "alpha" });
   j.log("scroll", { detail: { step: 1 } });
   j.log("gap", { detail: { ms: 1000 } });
@@ -30,12 +30,12 @@ test("retention prunes old journal files but keeps recent ones", () => {
   fs.writeFileSync(old, "{}\n");
   const past = Date.now() - 40 * 86400_000;
   fs.utimesSync(old, past / 1000, past / 1000);
-  createJournal({ root, runId: "2026-08-25T00:00:00.000Z", business: "b", retentionDays: 30 });
+  createJournal({ root, runId: "2026-08-25T00:00:00.000Z", campaign: "b", retentionDays: 30 });
   assert.equal(fs.existsSync(old), false);
 });
 
 test("a failing filesystem never throws from log", () => {
-  const j = createJournal({ root: "/nonexistent-\0-root", runId: "x", business: "b", retentionDays: 30 });
+  const j = createJournal({ root: "/nonexistent-\0-root", runId: "x", campaign: "b", retentionDays: 30 });
   assert.doesNotThrow(() => j.log("navigate"));
   assert.deepEqual(j.tail(5), []);
 });

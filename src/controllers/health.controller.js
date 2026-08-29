@@ -1,4 +1,4 @@
-import { loadGlobal, listBusinesses } from "../config/index.js";
+import { loadGlobal, listCampaigns } from "../config/index.js";
 import { isDbConfigured } from "../db/pool.js";
 import { isRunning } from "../services/supervisor.service.js";
 import { campaignDay } from "../utils/day.js";
@@ -19,7 +19,7 @@ export async function getHealth(_req, res) {
     campaignDay: campaignDay(),
     database: isDbConfigured() ? "configured" : "missing",
     running: isRunning(),
-    businesses: listBusinesses().length,
+    campaigns: listCampaigns().length,
     mcpEndpoint,
     configError,
   });

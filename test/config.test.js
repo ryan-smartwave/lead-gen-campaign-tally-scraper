@@ -6,10 +6,10 @@ import path from "node:path";
 import {
   loadConfig,
   loadGlobal,
-  listBusinesses,
-  writeBusiness,
-  deleteBusiness,
-  readBusiness,
+  listCampaigns,
+  writeCampaign,
+  deleteCampaign,
+  readCampaign,
   validateHashtags,
   slugify,
   validateCampaignDates,
@@ -36,58 +36,60 @@ function tmpRoot() {
   return root;
 }
 
-test("businesses round-trip through disk", () => {
+test("campaigns round-trip through disk", () => {
   const root = tmpRoot();
-  writeBusiness(
+  writeCampaign(
     { slug: "acme-events", name: "Acme Events", hashtags: [{ platform: "instagram", value: "acme" }] },
     root,
   );
-  writeBusiness({ slug: "bolt-cafe", name: "Bolt Cafe", hashtags: [] }, root);
+  writeCampaign({ slug: "bolt-cafe", name: "Bolt Cafe", hashtags: [] }, root);
 
-  const all = listBusinesses(root);
+  const all = listCampaigns(root);
   assert.equal(all.length, 2);
   assert.deepEqual(
     all.map((b) => b.slug),
     ["acme-events", "bolt-cafe"],
     "sorted by name",
   );
-  assert.equal(readBusiness("acme-events", root).name, "Acme Events");
+  assert.equal(readCampaign("acme-events", root).name, "Acme Events");
 
-  deleteBusiness("bolt-cafe", root);
-  assert.equal(listBusinesses(root).length, 1);
+  deleteCampaign("bolt-cafe", root);
+  assert.equal(listCampaigns(root).length, 1);
 });
 
-test("each business gets its own data directory", () => {
+test("each campaign gets its own data directory", () => {
   const root = tmpRoot();
-  writeBusiness(
+  writeCampaign(
     { slug: "one", name: "One", hashtags: [{ platform: "instagram", value: "a" }] },
     root,
   );
-  writeBusiness(
+  writeCampaign(
     { slug: "two", name: "Two", hashtags: [{ platform: "facebook", value: "b" }] },
     root,
   );
 
-  const first = loadConfig({ business: "one", root });
-  const second = loadConfig({ business: "two", root });
+  const first = loadConfig({ campaign: "one", root });
+  const second = loadConfig({ campaign: "two", root });
 
   assert.notEqual(first.dataDir, second.dataDir);
   assert.ok(first.dataDir.endsWith(path.join("data", "one")));
   // Separate dirs mean separate seen.json and separate run.lock, so two
-  // businesses can never corrupt each other's dedup memory.
+  // campaigns can never corrupt each other's dedup memory.
   assert.equal(first.safety.maxRunMinutes, 60, "safety comes from the shared global config");
-  assert.equal(second.campaign, "Two");
+  // `campaign` is the slug key; the display name rides along as campaignName.
+  assert.equal(second.campaign, "two");
+  assert.equal(second.campaignName, "Two");
 });
 
-test("loadConfig rejects an unknown business and an empty one", () => {
+test("loadConfig rejects an unknown campaign and an empty one", () => {
   const root = tmpRoot();
-  writeBusiness({ slug: "empty", name: "Empty", hashtags: [] }, root);
-  assert.throws(() => loadConfig({ business: "nope", root }), /unknown business/);
-  assert.throws(() => loadConfig({ business: "empty", root }), /no hashtags/);
+  writeCampaign({ slug: "empty", name: "Empty", hashtags: [] }, root);
+  assert.throws(() => loadConfig({ campaign: "nope", root }), /unknown campaign/);
+  assert.throws(() => loadConfig({ campaign: "empty", root }), /no hashtags/);
 });
 
-test("loadConfig fails clearly when no businesses exist", () => {
-  assert.throws(() => loadConfig({ root: tmpRoot() }), /no businesses defined/);
+test("loadConfig fails clearly when no campaigns exist", () => {
+  assert.throws(() => loadConfig({ root: tmpRoot() }), /no campaigns defined/);
 });
 
 test("hashtag validation blocks anything that would corrupt the csv", () => {
@@ -104,12 +106,12 @@ test("hashtag validation blocks anything that would corrupt the csv", () => {
   );
 });
 
-test("writeBusiness rejects a bad slug and bad hashtags", () => {
+test("writeCampaign rejects a bad slug and bad hashtags", () => {
   const root = tmpRoot();
-  assert.throws(() => writeBusiness({ slug: "Bad Slug", name: "x" }, root), /invalid slug/);
+  assert.throws(() => writeCampaign({ slug: "Bad Slug", name: "x" }, root), /invalid slug/);
   assert.throws(
     () =>
-      writeBusiness(
+      writeCampaign(
         { slug: "ok", name: "Ok", hashtags: [{ platform: "instagram", value: "a,b" }] },
         root,
       ),
@@ -192,24 +194,24 @@ test("scrollMinutesPerHashtag rejects bad shapes and the >45min ceiling", () => 
 
 test("campaign dates round-trip and are preserved on undefined", () => {
   const root = tmpRoot();
-  // Write a business with campaign dates
-  writeBusiness(
+  // Write a campaign with campaign dates
+  writeCampaign(
     {
       slug: "dated-biz",
-      name: "Dated Business",
+      name: "Dated Campaign",
       hashtags: [],
       campaignStart: "2026-08-01",
       campaignEnd: "2026-08-31",
     },
     root,
   );
-  // Verify dates round-trip through readBusiness
-  const read1 = readBusiness("dated-biz", root);
+  // Verify dates round-trip through readCampaign
+  const read1 = readCampaign("dated-biz", root);
   assert.equal(read1.campaignStart, "2026-08-01");
   assert.equal(read1.campaignEnd, "2026-08-31");
 
   // Update without dates: undefined should preserve existing values
-  writeBusiness(
+  writeCampaign(
     {
       slug: "dated-biz",
       name: "Updated Name",
@@ -219,7 +221,7 @@ test("campaign dates round-trip and are preserved on undefined", () => {
     },
     root,
   );
-  const read2 = readBusiness("dated-biz", root);
+  const read2 = readCampaign("dated-biz", root);
   assert.equal(read2.campaignStart, "2026-08-01", "omitted date preserved existing campaignStart");
   assert.equal(read2.campaignEnd, "2026-08-31", "omitted date preserved existing campaignEnd");
   assert.equal(read2.name, "Updated Name", "name was updated");

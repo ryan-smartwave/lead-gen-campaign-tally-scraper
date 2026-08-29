@@ -21,7 +21,7 @@ const STATUS_FOR = {
 export async function create(req, res) {
   try {
     const started = await startRun({
-      business: req.body?.business,
+      campaign: req.body?.campaign,
       force: req.body?.force === true,
       store: req.body?.store === "file" ? "file" : "database",
     });

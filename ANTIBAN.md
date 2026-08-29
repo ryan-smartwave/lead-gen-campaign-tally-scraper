@@ -23,7 +23,7 @@ Passive reading of a few hashtag feeds, from a real logged-in browser on a resid
 3. **One machine, one IP, one session.** Don't log this account in on other devices/IPs at the same time — "logins from multiple devices/IPs in a short window" is an explicit flag. Keep it on this Chrome profile.
 4. **Low, bounded volume.** Hard caps: max hashtags per run, max scrolls per hashtag, and a max total run duration. A daily run touches a handful of pages, nowhere near the ~200-requests/hour IP ceiling.
 5. **Human pace, randomized — never a fixed rhythm.** Fixed intervals are themselves a bot signature. The tool jitters every delay: incremental scrolls (not jump-to-bottom) with random pauses, and a randomized long gap between each hashtag (minutes, not seconds). This is what naturally stretches a run to the 30–60 min window.
-6. **Randomized order.** Hashtags are shuffled each run, so the visit sequence never repeats. Runs are started manually, so start times vary naturally; if you ever wire up a scheduler, vary the trigger time yourself rather than firing at the same clock minute daily. When a business tracks more hashtags than the per-run cap, the run rotates through the least recently scraped first, so the extra hashtags are still covered without raising the per-run volume.
+6. **Randomized order.** Hashtags are shuffled each run, so the visit sequence never repeats. Runs are started manually, so start times vary naturally; if you ever wire up a scheduler, vary the trigger time yourself rather than firing at the same clock minute daily. When a campaign tracks more hashtags than the per-run cap, the run rotates through the least recently scraped first, so the extra hashtags are still covered without raising the per-run volume.
 7. **Abort on the first danger sign — never retry.** If a run hits a login wall, a checkpoint/challenge, a "we restrict certain activity" / "try again later" notice, or a suspended-account page, the tool **stops the entire run immediately** and records it. Blocks escalate: retrying through a checkpoint turns a few-hour speed bump into a 7–14 day restriction. A missed day is cheap; an escalated block is not.
 8. **Daily only, never continuous.** One short run per day. No polling loops, no background hammering.
 9. **Resilient tally.** The per-hashtag counts are cumulative and persisted, so a skipped or aborted day never corrupts the campaign series — the next run just picks up.
@@ -114,7 +114,7 @@ React fiber props are read in-page as a fallback for fields capture missed
 (currently the poster's username) — a bounded, read-only walk of JS objects the
 page already holds: no events, no requests, nothing observable. Facebook gets no
 such read because its React build exposes no fiber internals on DOM nodes
-(probed live 2026-08-27). (2) When a business has campaign dates, the Facebook
+(probed live 2026-08-27). (2) When a campaign has campaign dates, the Facebook
 search URL carries FB's own `rp_creation_time` filter (the same one its UI's
 "Date posted" emits), so results are pre-narrowed to the campaign window. This
 *reduces* wasted requests — the same single navigation, fewer scrolls burned on

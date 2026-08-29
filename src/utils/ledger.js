@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * A one-line-per-run record of which business ran on which day.
+ * A one-line-per-run record of which campaign ran on which day.
  *
  * This is the only thing a database-backed run leaves on disk, and it holds no
  * scraped content — just a date, a run id and an outcome. It exists because the
@@ -46,6 +46,6 @@ export function readLedger(root) {
   return entries;
 }
 
-export function ledgerHasRun(root, business, day) {
-  return readLedger(root).some((e) => e.business === business && e.day === day);
+export function ledgerHasRun(root, campaign, day) {
+  return readLedger(root).some((e) => e.campaign === campaign && e.day === day);
 }

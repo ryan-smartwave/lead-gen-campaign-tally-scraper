@@ -22,7 +22,7 @@ import { TallyStore } from "./tally.js";
  *   finish()                       -> void       (flush; optional)
  *   lastVisits()                   -> { "platform:value": lastRunAt } (optional;
  *                                     feeds least-recently-scraped rotation when
- *                                     a business exceeds maxHashtagsPerRun)
+ *                                     a campaign exceeds maxHashtagsPerRun)
  *   enrich(hashtag, record, runAt) -> void        (optional; merges a single
  *                                     enriched post's fields into what was
  *                                     already recorded for it — NOT the same

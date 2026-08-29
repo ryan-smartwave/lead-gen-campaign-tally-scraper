@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { coverageCheck } from "../src/utils/coverage.js";
 
-test("coverage warns when a business tracks more hashtags than one run visits", () => {
+test("coverage warns when a campaign tracks more hashtags than one run visits", () => {
   const check = coverageCheck(15, 12);
   assert.equal(check.state, "warn");
   assert.match(check.detail, /15/);

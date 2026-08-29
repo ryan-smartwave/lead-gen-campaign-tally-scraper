@@ -1,12 +1,12 @@
 import { run } from "./run.service.js";
-import { loadConfig, listBusinesses, ROOT } from "../config/index.js";
+import { loadConfig, listCampaigns, ROOT } from "../config/index.js";
 import {
   createDbStore,
   closeRun,
   heartbeat,
   ranOnDay,
   setRunTargets,
-  syncBusinesses,
+  syncCampaigns,
 } from "../stores/dbStore.js";
 import { createFileStore } from "../stores/fileStore.js";
 import { isDbConfigured } from "../db/pool.js";
@@ -26,7 +26,7 @@ const EVENT_CAP = 2000; // a run emits well under 100; a runaway guard
 const state = {
   events: [],
   runId: null,
-  business: null,
+  campaign: null,
   startedAt: null,
   finished: true,
   controller: null,
@@ -42,7 +42,7 @@ export function snapshot() {
   return {
     active: !state.finished,
     runId: state.runId,
-    business: state.business,
+    campaign: state.campaign,
     startedAt: state.startedAt,
     firstSeq: state.events[0]?.seq ?? 0,
     lastSeq: state.events.at(-1)?.seq ?? 0,
@@ -67,7 +67,7 @@ export function clearFinished() {
   if (!state.finished) return false;
   state.events = [];
   state.runId = null;
-  state.business = null;
+  state.campaign = null;
   state.startedAt = null;
   state.lastError = null;
   return true;
@@ -86,18 +86,18 @@ function push(event) {
 }
 
 /**
- * Has this business already run today?
+ * Has this campaign already run today?
  *
  * The local ledger first, because it survives the database being cleared; then
  * the database. Any positive answer wins — a guard should be conservative, so
  * the sources are OR-ed rather than ranked.
  */
-export async function ranToday(business) {
+export async function ranToday(campaign) {
   const day = campaignDay();
-  if (ledgerHasRun(ROOT, business, day)) return true;
+  if (ledgerHasRun(ROOT, campaign, day)) return true;
   if (isDbConfigured()) {
     try {
-      return await ranOnDay(business, day);
+      return await ranOnDay(campaign, day);
     } catch {
       // A database that cannot answer must not weaken the guard into a "no";
       // the ledger has already been consulted, so fall through to false.
@@ -107,24 +107,24 @@ export async function ranToday(business) {
   return false;
 }
 
-export async function refreshBusinessMirror() {
+export async function refreshCampaignMirror() {
   if (!isDbConfigured()) return 0;
-  return syncBusinesses(listBusinesses());
+  return syncCampaigns(listCampaigns());
 }
 
-export async function startRun({ business, force = false, store = "database" } = {}) {
+export async function startRun({ campaign, force = false, store = "database" } = {}) {
   if (!state.finished) {
     const err = new Error("a run is already in progress");
     err.code = "ALREADY_RUNNING";
     throw err;
   }
 
-  const config = loadConfig({ business });
-  const businessSlug = config.business;
+  const config = loadConfig({ campaign });
+  const campaignSlug = config.campaign;
 
-  if (!force && (await ranToday(businessSlug))) {
+  if (!force && (await ranToday(campaignSlug))) {
     const err = new Error(
-      `${businessSlug} already ran today (${campaignDay()}). Running twice a day works against the anti-ban design.`,
+      `${campaignSlug} already ran today (${campaignDay()}). Running twice a day works against the anti-ban design.`,
     );
     err.code = "ALREADY_RAN_TODAY";
     throw err;
@@ -137,8 +137,8 @@ export async function startRun({ business, force = false, store = "database" } =
     store === "file"
       ? createFileStore(config.dataDir)
       : createDbStore({
-          business: businessSlug,
-          campaign: config.campaign,
+          campaign: campaignSlug,
+          campaignName: config.campaignName,
           runId,
           budgetMinutes: config.safety.maxRunMinutes,
           targets,
@@ -164,11 +164,11 @@ export async function startRun({ business, force = false, store = "database" } =
   state.lastError = null;
   state.runId = runId;
   state.startedAt = runId;
-  state.business = businessSlug;
+  state.campaign = campaignSlug;
 
   // Written before the first page is visited, so an interrupted run still
   // counts against the once-a-day guard.
-  appendLedger(ROOT, { business: businessSlug, day: campaignDay(runId), runId, status: "running" });
+  appendLedger(ROOT, { campaign: campaignSlug, day: campaignDay(runId), runId, status: "running" });
 
   let resolveStarted;
   let rejectStarted;
@@ -188,8 +188,8 @@ export async function startRun({ business, force = false, store = "database" } =
       resolveStarted({
         runId: event.runId,
         startedAt: event.at,
-        business: businessSlug,
-        campaign: config.campaign,
+        campaign: campaignSlug,
+        campaignName: config.campaignName,
         targets: event.targets,
         budgetMinutes: event.budgetMinutes,
         store: event.store,
@@ -214,7 +214,7 @@ export async function startRun({ business, force = false, store = "database" } =
   })
     .then(async (result) => {
       appendLedger(ROOT, {
-        business: businessSlug,
+        campaign: campaignSlug,
         day: campaignDay(runId),
         runId,
         status: result.status,
@@ -224,7 +224,7 @@ export async function startRun({ business, force = false, store = "database" } =
     .catch(async (err) => {
       state.lastError = err.message;
       appendLedger(ROOT, {
-        business: businessSlug,
+        campaign: campaignSlug,
         day: campaignDay(runId),
         runId,
         status: "aborted",

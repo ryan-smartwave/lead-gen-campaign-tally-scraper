@@ -16,8 +16,8 @@ function fastConfig(hashtags, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "run-test-"));
   return {
     mcpEndpoint: "http://127.0.0.1:1/mcp",
-    business: "test-business",
-    campaign: "Test Business",
+    campaign: "test-campaign",
+    campaign: "Test Campaign",
     hashtags,
     safety: {
       maxHashtagsPerRun: 12,
@@ -300,18 +300,18 @@ test("a stale lock from a dead process is taken over", () => {
 /**
  * REGRESSION TEST — do not delete.
  *
- * The lock guards Chrome, not the data, and every business shares one browser
- * session. A per-business lock let two businesses run at once and fight over
+ * The lock guards Chrome, not the data, and every campaign shares one browser
+ * session. A per-campaign lock let two campaigns run at once and fight over
  * the same tab, so the lock is global to the installation.
  */
-test("the lock is global, so two businesses cannot run at once", () => {
+test("the lock is global, so two campaigns cannot run at once", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lock-shared-"));
   const lockPath = lockPathFor(root);
   const first = acquireLock(lockPath, "cli", 60);
   assert.throws(
     () => acquireLock(lockPathFor(root), "web", 60),
     (err) => err.code === "ALREADY_RUNNING",
-    "a second business is refused even though its data lives elsewhere",
+    "a second campaign is refused even though its data lives elsewhere",
   );
   releaseLock(first);
   releaseLock(acquireLock(lockPathFor(root), "web", 60));

@@ -12,7 +12,7 @@ const { extractOtherHashtags } = await import("../src/utils/hashtags.js");
 const { fbUrlFromPostId } = await import("../src/services/capture.service.js");
 
 const { rows } = await query(
-  `select business, platform, hashtag, post_id, url, caption, body, preview, other_hashtags
+  `select campaign, platform, hashtag, post_id, url, caption, body, preview, other_hashtags
    from posts`,
 );
 
@@ -30,8 +30,8 @@ for (const r of rows) {
     `update posts set
        other_hashtags = coalesce($5, other_hashtags),
        url            = coalesce($6, url)
-     where business = $1 and platform = $2 and hashtag = $3 and post_id = $4`,
-    [r.business, r.platform, r.hashtag, r.post_id, newTags, newUrl],
+     where campaign = $1 and platform = $2 and hashtag = $3 and post_id = $4`,
+    [r.campaign, r.platform, r.hashtag, r.post_id, newTags, newUrl],
   );
   if (newTags) tagged++;
   if (newUrl) linked++;

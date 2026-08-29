@@ -1,7 +1,7 @@
 # Campaign hashtag tally — scraper service
 
 Counts posts for a set of **campaign hashtags** on **Instagram and Facebook**, for
-any number of businesses, by driving your own signed-in Chrome through
+any number of campaigns, by driving your own signed-in Chrome through
 [mcp-chrome](https://github.com/hangwin/mcp-chrome). Results go to Postgres.
 
 Runs as a **local Express service** that the
@@ -41,25 +41,25 @@ signed-in browser, so they must not be reachable from the network.
 
 ```bash
 npm run serve        # the HTTP service (what the UI talks to)
-npm run businesses   # list configured businesses
+npm run campaigns   # list configured campaigns
 npm run check        # verify the mcp-chrome connection
 npm run run-once     # scrape from the terminal, writing FILES (no database)
 npm run db:migrate   # apply schema migrations
 npm run db:check     # read back what the database holds
-npm run db:clear     # empty collected results, keeping businesses
+npm run db:clear     # empty collected results, keeping campaigns
 npm test             # unit tests (no Chrome, no database, no network)
 ```
 
-## Businesses
+## Campaigns
 
-Each business has its own hashtags and its own history:
+Each campaign has its own hashtags and its own history:
 
 ```
 config.json              shared: mcpEndpoint + safety limits (the anti-ban firewall)
-businesses/<id>.json     per business: { name, hashtags: [{platform, value}],
+campaigns/<id>.json     per campaign: { name, hashtags: [{platform, value}],
                          campaignStart?, campaignEnd? }
 data/
-  run.lock               guards Chrome — global, because every business shares one session
+  run.lock               guards Chrome — global, because every campaign shares one session
   runs.log               one line per run (memory behind the once-a-day guard)
   <id>/                  CLI-mode results (CSV + JSONL + seen.json dedup)
   journal/<runId>.jsonl  forensic action log — always-on, one line per navigation/scroll/
@@ -71,23 +71,23 @@ data/
 
 Manage them from the UI's settings screen, or edit the files directly — the
 service reads and writes the same files, so the two can never disagree. It
-mirrors business definitions into Postgres on change and at startup, so the UI
+mirrors campaign definitions into Postgres on change and at startup, so the UI
 can read them without filesystem access.
 
 **Safety limits are file-only and have no write route.** Hashtags are content;
 timing and volume limits are what keep the account unflagged, so nothing in the
 API can widen them.
 
-**Campaign freshness:** Each business may optionally set `campaignStart` and/or
+**Campaign freshness:** Each campaign may optionally set `campaignStart` and/or
 `campaignEnd` as ISO YYYY-MM-DD dates (e.g., `"2026-01-15"`) in its
-`businesses/<slug>.json` file, editable via the PATCH `/businesses/:slug` route.
+`campaigns/<slug>.json` file, editable via the PATCH `/campaigns/:slug` route.
 Tallies then record both `new_posts` (posts not seen in prior runs) and
 `fresh_posts` (posts that are both new AND posted within the campaign window).
 Posts of unknown age (all Facebook records, unenriched Instagram) still count —
 only posts known to predate the campaign are excluded.
 
 **More hashtags than `maxHashtagsPerRun`?** A run visits at most that many (12
-by default). A business tracking more still gets full coverage — each run picks
+by default). A campaign tracking more still gets full coverage — each run picks
 the **least recently scraped** hashtags first — but on a rotation, so a hashtag
 that sat a day out has a gap in its daily series (the cumulative curve is
 unaffected). Preflight reports a `coverage` warning whenever this rotation is
@@ -128,12 +128,12 @@ All JSON, all loopback.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | liveness, database and Chrome config, whether a run is live |
-| `GET` | `/preflight?business=` | can a run start, and if not exactly why |
-| `GET` | `/businesses` | list businesses and their hashtags |
-| `POST` | `/businesses` | create one (`{name, hashtags}`) |
-| `PATCH` | `/businesses/:slug` | rename and/or replace its hashtags |
-| `DELETE` | `/businesses/:slug` | remove the definition; results are kept |
-| `POST` | `/runs` | start a run (`{business, force?}`) → `202` |
+| `GET` | `/preflight?campaign=` | can a run start, and if not exactly why |
+| `GET` | `/campaigns` | list campaigns and their hashtags |
+| `POST` | `/campaigns` | create one (`{name, hashtags}`) |
+| `PATCH` | `/campaigns/:slug` | rename and/or replace its hashtags |
+| `DELETE` | `/campaigns/:slug` | remove the definition; results are kept |
+| `POST` | `/runs` | start a run (`{campaign, force?}`) → `202` |
 | `GET` | `/runs/active` | replayable snapshot of the in-flight run |
 | `DELETE` | `/runs/active` | stop a live run, or dismiss a finished one's log |
 | `GET` | `/runs/events?sinceSeq=` | server-sent event stream |
@@ -148,7 +148,7 @@ Refusals are meaningful, not generic: `already_ran_today` (overridable with
 bin/cli.js              standalone CLI (file-backed, no database)
 src/index.js            service entry point
 src/app.js              Express app
-src/config/             config.json + businesses, and env
+src/config/             config.json + campaigns, and env
 src/controllers/         request handling
 src/routes/              endpoint definitions
 src/middlewares/         error translation
@@ -167,11 +167,11 @@ db/migrations/           schema (this repo owns it, being the writer)
 | **file** | `npm run run-once` | `data/<id>/` CSV + JSONL | `seen.json` |
 
 Both are the same run loop with a different store injected. **Don't mix them for
-the same business** — each keeps its own deduplication memory, so a hashtag
+the same campaign** — each keeps its own deduplication memory, so a hashtag
 scraped through one path looks new to the other.
 
 Two things stay on disk in either mode, and neither is scraped content:
-`data/run.lock` (guards Chrome — global, because every business shares one
+`data/run.lock` (guards Chrome — global, because every campaign shares one
 browser session) and `data/runs.log` (one line per run, the memory behind the
 once-a-day guard, so clearing the database cannot make it forget).
 

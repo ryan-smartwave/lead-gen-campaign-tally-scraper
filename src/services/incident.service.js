@@ -4,7 +4,7 @@ import { sanitizeRunId } from "./journal.service.js";
 
 const PAGE_TEXT = `return (document.body ? document.body.innerText : '').slice(0, 50000);`;
 
-export async function captureIncident({ root, runId, business, error, journal, client, caps = {}, deps = {} }) {
+export async function captureIncident({ root, runId, campaign, error, journal, client, caps = {}, deps = {} }) {
   const base = path.join(root, "data", "incidents");
   const incidentDir = path.join(base, sanitizeRunId(runId));
   const reason = error?.reason ?? "unknown";
@@ -13,7 +13,7 @@ export async function captureIncident({ root, runId, business, error, journal, c
   try { fs.mkdirSync(incidentDir, { recursive: true }); } catch { /* best effort */ }
 
   const bundle = {
-    at: new Date().toISOString(), runId, business, reason, url,
+    at: new Date().toISOString(), runId, campaign, reason, url,
     context: error?.message ?? String(error), tail: (() => { try { return journal?.tail?.(50) ?? []; } catch { return []; } })(),
   };
   try { fs.writeFileSync(path.join(incidentDir, "incident.json"), JSON.stringify(bundle, null, 2)); } catch { /* swallow */ }
@@ -37,7 +37,7 @@ export async function captureIncident({ root, runId, business, error, journal, c
   try {
     fs.mkdirSync(base, { recursive: true });
     fs.appendFileSync(path.join(base, "index.log"),
-      `${bundle.at}\t${business}\t${runId}\t${reason}\t${url ?? ""}\n`);
+      `${bundle.at}\t${campaign}\t${runId}\t${reason}\t${url ?? ""}\n`);
   } catch { /* swallow */ }
 
   return { incidentDir };

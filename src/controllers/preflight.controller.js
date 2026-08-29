@@ -1,4 +1,4 @@
-import { loadGlobal, listBusinesses } from "../config/index.js";
+import { loadGlobal, listCampaigns } from "../config/index.js";
 import { isDbConfigured } from "../db/pool.js";
 import { isRunning, ranToday } from "../services/supervisor.service.js";
 import { probeMcp } from "../services/mcpProbe.service.js";
@@ -17,9 +17,9 @@ import { coverageCheck } from "../utils/coverage.js";
  * Always answers 200. This endpoint reports failures; it does not fail.
  */
 export async function getPreflight(req, res) {
-  const all = listBusinesses();
-  const requested = req.query.business;
-  const business = all.find((b) => b.slug === requested) ?? all[0] ?? null;
+  const all = listCampaigns();
+  const requested = req.query.campaign;
+  const campaign = all.find((b) => b.slug === requested) ?? all[0] ?? null;
 
   let global;
   try {
@@ -29,20 +29,20 @@ export async function getPreflight(req, res) {
       canRun: false,
       blockedBy: "config_invalid",
       campaignDay: campaignDay(),
-      business: null,
-      businesses: all.map((b) => ({ slug: b.slug, name: b.name, hashtags: b.hashtags.length })),
+      campaign: null,
+      campaigns: all.map((b) => ({ slug: b.slug, name: b.name, hashtags: b.hashtags.length })),
       checks: { config: { state: "fail", detail: err.message } },
     });
   }
 
   const mcp = await probeMcp(global.mcpEndpoint);
-  const already = business ? await ranToday(business.slug) : false;
+  const already = campaign ? await ranToday(campaign.slug) : false;
   const running = isRunning();
 
   // Ordered by what the operator should fix first.
-  const blockedBy = !business
-    ? "no_business"
-    : business.hashtags.length === 0
+  const blockedBy = !campaign
+    ? "no_campaign"
+    : campaign.hashtags.length === 0
       ? "no_hashtags"
       : !isDbConfigured()
         ? "db_not_configured"
@@ -60,10 +60,10 @@ export async function getPreflight(req, res) {
     // Only the once-a-day guard may be overridden, and only deliberately.
     overridable: blockedBy === "already_ran_today",
     campaignDay: campaignDay(),
-    business: business
-      ? { slug: business.slug, name: business.name, hashtags: business.hashtags }
+    campaign: campaign
+      ? { slug: campaign.slug, name: campaign.name, hashtags: campaign.hashtags }
       : null,
-    businesses: all.map((b) => ({ slug: b.slug, name: b.name, hashtags: b.hashtags.length })),
+    campaigns: all.map((b) => ({ slug: b.slug, name: b.name, hashtags: b.hashtags.length })),
     checks: {
       mcp: {
         state: mcp.reachable ? "ok" : "fail",
@@ -84,7 +84,7 @@ export async function getPreflight(req, res) {
       },
       // Not a blocker — runs rotate through the excess — but never silent:
       // the rotation leaves per-day gaps in each hashtag's series.
-      coverage: coverageCheck(business?.hashtags.length ?? 0, global.safety.maxHashtagsPerRun),
+      coverage: coverageCheck(campaign?.hashtags.length ?? 0, global.safety.maxHashtagsPerRun),
       sessions: {
         state: "not_checked",
         detail:

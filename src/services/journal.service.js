@@ -5,7 +5,7 @@ export function sanitizeRunId(runId) {
   return String(runId).replace(/[:*?"<>|]/g, "-");
 }
 
-export function createJournal({ root, runId, business, retentionDays = 30 }) {
+export function createJournal({ root, runId, campaign, retentionDays = 30 }) {
   const dir = path.join(root, "data", "journal");
   const file = path.join(dir, `${sanitizeRunId(runId)}.jsonl`);
   let seq = 0;
@@ -32,6 +32,6 @@ export function createJournal({ root, runId, business, retentionDays = 30 }) {
     } catch { return []; }
   };
 
-  log("run_start", { business, detail: { runId } });
+  log("run_start", { campaign, detail: { runId } });
   return { log, tail, path: file, dir };
 }

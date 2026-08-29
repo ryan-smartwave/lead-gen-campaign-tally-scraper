@@ -56,9 +56,9 @@ import { hashtagUrl } from "../config/index.js";
  */
 
 /* ---------------- lockfile ----------------
-   Guards the BROWSER, not the data. Every business shares one Chrome session
-   and one mcp-chrome bridge, so the lock is global rather than per business —
-   two businesses running at once would fight over the same tab. It also spans
+   Guards the BROWSER, not the data. Every campaign shares one Chrome session
+   and one mcp-chrome bridge, so the lock is global rather than per campaign —
+   two campaigns running at once would fight over the same tab. It also spans
    both entry points, so a terminal run and a web run cannot overlap, and it
    needs no database. */
 
@@ -516,7 +516,7 @@ export async function run({
   const journal = createJournal({
     root: config.root,
     runId: runAt,
-    business: config.business,
+    campaign: config.campaign,
     retentionDays: S.journalRetentionDays,
   });
   let caps = { tabs: false, screenshot: false };
@@ -552,8 +552,8 @@ export async function run({
 
   emit("run_started", {
     runId: runAt,
+    campaignName: config.campaignName,
     campaign: config.campaign,
-    business: config.business,
     store: results.kind ?? "unknown",
     targets: targets.map(asTarget),
     budgetMinutes: S.maxRunMinutes,
@@ -647,7 +647,7 @@ export async function run({
             ({ incidentDir } = await captureIncident({
               root: config.root,
               runId: runAt,
-              business: config.business,
+              campaign: config.campaign,
               error: err,
               journal,
               client,
@@ -777,7 +777,7 @@ export async function run({
               ({ incidentDir } = await captureIncident({
                 root: config.root,
                 runId: runAt,
-                business: config.business,
+                campaign: config.campaign,
                 error: err,
                 journal,
                 client,

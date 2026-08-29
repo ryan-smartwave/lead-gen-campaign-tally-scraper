@@ -3,13 +3,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Config loading for multiple businesses. Importing this module has no side
+ * Config loading for multiple campaigns. Importing this module has no side
  * effects, so the web app can read config without triggering a scrape.
  *
  * Layout:
  *   config.json            global: mcpEndpoint + safety only
- *   businesses/<slug>.json per business: { name, hashtags: [...] }
- *   data/<slug>/           per business: tally.csv, seen.json, posts/, run.lock
+ *   campaigns/<slug>.json per campaign: { name, hashtags: [...] }
+ *   data/<slug>/           per campaign: tally.csv, seen.json, posts/, run.lock
  *
  * The split is deliberate. Hashtags are content and may be edited from the web
  * UI; `safety` is the anti-ban firewall and is file-only, with no write path
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
  * The repository root: three levels up from src/config/index.js.
  *
  * Derived from this module's own location rather than cwd, so the CLI, the
- * service and the test suite all resolve config.json, businesses/ and data/ to
+ * service and the test suite all resolve config.json, campaigns/ and data/ to
  * the same place no matter where they were started from.
  */
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -51,15 +51,15 @@ export function validateCampaignDates(campaignStart, campaignEnd) {
   return problems;
 }
 
-export function businessesDir(root = ROOT) {
-  return path.join(root, "businesses");
+export function campaignsDir(root = ROOT) {
+  return path.join(root, "campaigns");
 }
 
-export function businessFile(slug, root = ROOT) {
-  return path.join(businessesDir(root), `${slug}.json`);
+export function campaignFile(slug, root = ROOT) {
+  return path.join(campaignsDir(root), `${slug}.json`);
 }
 
-export function businessDataDir(slug, root = ROOT) {
+export function campaignDataDir(slug, root = ROOT) {
   return path.join(root, "data", slug);
 }
 
@@ -71,7 +71,7 @@ export function slugify(name) {
     .slice(0, 48);
 }
 
-/** Global settings shared by every business. */
+/** Global settings shared by every campaign. */
 export function loadGlobal(root = ROOT) {
   const file = path.join(root, "config.json");
   let raw;
@@ -210,9 +210,9 @@ export function validateHashtags(hashtags) {
   return problems;
 }
 
-/** Every business defined on disk, ordered by name. */
-export function listBusinesses(root = ROOT) {
-  const dir = businessesDir(root);
+/** Every campaign defined on disk, ordered by name. */
+export function listCampaigns(root = ROOT) {
+  const dir = campaignsDir(root);
   let files;
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
@@ -233,17 +233,17 @@ export function listBusinesses(root = ROOT) {
         campaignEnd: raw.campaignEnd ?? null,
       });
     } catch {
-      /* a malformed business file is skipped rather than breaking every read */
+      /* a malformed campaign file is skipped rather than breaking every read */
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function readBusiness(slug, root = ROOT) {
-  return listBusinesses(root).find((b) => b.slug === slug) ?? null;
+export function readCampaign(slug, root = ROOT) {
+  return listCampaigns(root).find((b) => b.slug === slug) ?? null;
 }
 
-export function writeBusiness({ slug, name, hashtags = [], createdAt, campaignStart, campaignEnd }, root = ROOT) {
+export function writeCampaign({ slug, name, hashtags = [], createdAt, campaignStart, campaignEnd }, root = ROOT) {
   if (!SLUG_RE.test(slug)) {
     throw new Error(`invalid slug ${JSON.stringify(slug)} — use lowercase letters, digits, hyphens`);
   }
@@ -254,9 +254,9 @@ export function writeBusiness({ slug, name, hashtags = [], createdAt, campaignSt
   const dateProblems = validateCampaignDates(campaignStart, campaignEnd);
   if (dateProblems.length) throw new Error(`invalid campaign dates:\n  - ${dateProblems.join("\n  - ")}`);
 
-  fs.mkdirSync(businessesDir(root), { recursive: true });
-  fs.mkdirSync(businessDataDir(slug, root), { recursive: true });
-  const existing = readBusiness(slug, root);
+  fs.mkdirSync(campaignsDir(root), { recursive: true });
+  fs.mkdirSync(campaignDataDir(slug, root), { recursive: true });
+  const existing = readCampaign(slug, root);
   const payload = {
     name: name.trim(),
     createdAt: createdAt ?? existing?.createdAt ?? new Date().toISOString(),
@@ -264,46 +264,46 @@ export function writeBusiness({ slug, name, hashtags = [], createdAt, campaignSt
     campaignStart: campaignStart ?? existing?.campaignStart ?? null,
     campaignEnd: campaignEnd ?? existing?.campaignEnd ?? null,
   };
-  fs.writeFileSync(businessFile(slug, root), `${JSON.stringify(payload, null, 2)}\n`);
+  fs.writeFileSync(campaignFile(slug, root), `${JSON.stringify(payload, null, 2)}\n`);
   return { slug, ...payload };
 }
 
-/** Removes the business definition. Collected data is left in place on purpose. */
-export function deleteBusiness(slug, root = ROOT) {
-  fs.rmSync(businessFile(slug, root), { force: true });
+/** Removes the campaign definition. Collected data is left in place on purpose. */
+export function deleteCampaign(slug, root = ROOT) {
+  fs.rmSync(campaignFile(slug, root), { force: true });
 }
 
 /**
- * The config a run needs: global safety plus one business's hashtags, with that
- * business's own data directory (separate dedup memory and lock per business).
+ * The config a run needs: global safety plus one campaign's hashtags, with that
+ * campaign's own data directory (separate dedup memory and lock per campaign).
  */
-export function loadConfig({ business, root = ROOT } = {}) {
+export function loadConfig({ campaign, root = ROOT } = {}) {
   const global = loadGlobal(root);
-  const all = listBusinesses(root);
+  const all = listCampaigns(root);
   if (all.length === 0) {
     throw new Error(
-      `no businesses defined. Create ${businessFile("<slug>", root)} with {name, hashtags}.`,
+      `no campaigns defined. Create ${campaignFile("<slug>", root)} with {name, hashtags}.`,
     );
   }
-  const chosen = business ? all.find((b) => b.slug === business) : all[0];
+  const chosen = campaign ? all.find((b) => b.slug === campaign) : all[0];
   if (!chosen) {
     throw new Error(
-      `unknown business ${JSON.stringify(business)}. Available: ${all.map((b) => b.slug).join(", ")}`,
+      `unknown campaign ${JSON.stringify(campaign)}. Available: ${all.map((b) => b.slug).join(", ")}`,
     );
   }
   if (chosen.hashtags.length === 0) {
-    throw new Error(`business ${chosen.slug} has no hashtags configured`);
+    throw new Error(`campaign ${chosen.slug} has no hashtags configured`);
   }
 
   return {
     mcpEndpoint: global.mcpEndpoint,
     safety: global.safety,
-    business: chosen.slug,
-    campaign: chosen.name,
+    campaign: chosen.slug,
+    campaignName: chosen.name,
     hashtags: chosen.hashtags,
     campaignStart: chosen.campaignStart ?? null,
     campaignEnd: chosen.campaignEnd ?? null,
-    dataDir: businessDataDir(chosen.slug, root),
+    dataDir: campaignDataDir(chosen.slug, root),
     root,
   };
 }
