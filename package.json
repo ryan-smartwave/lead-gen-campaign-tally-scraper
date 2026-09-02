@@ -12,11 +12,11 @@
     "serve": "node src/index.js",
     "run-once": "node bin/cli.js --run",
     "check": "node bin/cli.js --check",
-    "businesses": "node bin/cli.js --list",
+    "campaigns": "node bin/cli.js --list",
     "db:migrate": "node scripts/migrate.mjs",
     "db:check": "node scripts/db-check.mjs",
     "db:clear": "node scripts/db-clear.mjs",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

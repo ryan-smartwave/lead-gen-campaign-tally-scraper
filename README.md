@@ -33,8 +33,9 @@ signed-in browser, so they must not be reachable from the network.
    ANTIBAN.md §2).
 4. `npm install`, then `cp .env.example .env` and put your Postgres connection
    string in it.
-5. **Apply migrations:** `npm run db:migrate` (includes schema migration 004 for
-   rich post fields and campaign freshness tallies).
+5. **Apply migrations:** `npm run db:migrate`. The schema currently runs through
+   migration 008: rich post fields, campaign freshness, other-hashtags,
+   the business → campaign rename, and duration/provenance/location columns.
 6. `npm run serve`
 
 ## Commands
@@ -57,7 +58,7 @@ Each campaign has its own hashtags and its own history:
 ```
 config.json              shared: mcpEndpoint + safety limits (the anti-ban firewall)
 campaigns/<id>.json     per campaign: { name, hashtags: [{platform, value}],
-                         campaignStart?, campaignEnd? }
+                         campaignStart?, campaignEnd?, country?, fbLocationId? }
 data/
   run.lock               guards Chrome — global, because every campaign shares one session
   runs.log               one line per run (memory behind the once-a-day guard)
@@ -86,8 +87,20 @@ Tallies then record both `new_posts` (posts not seen in prior runs) and
 Posts of unknown age (all Facebook records, unenriched Instagram) still count —
 only posts known to predate the campaign are excluded.
 
-**More hashtags than `maxHashtagsPerRun`?** A run visits at most that many (12
-by default). A campaign tracking more still gets full coverage — each run picks
+When **both** dates are set, Facebook searches are also date-filtered at the
+source: the visit URL carries Facebook's own `rp_creation_time` filter (day
+granularity), so most out-of-window posts never appear at all. A campaign with
+only one date (or neither) gets unfiltered Facebook searches. Instagram has no
+date facility; its filtering happens after capture, via enrichment.
+
+**Location targeting:** each campaign has a `country` (default `"Philippines"`,
+recorded with results) and an optional `fbLocationId`, which adds Facebook's
+`rp_location` filter to search URLs. Use a **city or metro place id** —
+country-level ids are silently ignored by Facebook (verified live). Instagram
+search has no location facility.
+
+**More hashtags than `maxHashtagsPerRun`?** A run visits at most that many (10
+in the shipped config). A campaign tracking more still gets full coverage — each run picks
 the **least recently scraped** hashtags first — but on a rotation, so a hashtag
 that sat a day out has a gap in its daily series (the cumulative curve is
 unaffected). Preflight reports a `coverage` warning whenever this rotation is
@@ -97,10 +110,27 @@ active.
 connects; the only enforced waits are the randomized gaps between hashtags
 (`gapBetweenHashtagsMs`).
 
-**Safety configuration keys** (in `config.json`, file-only):
-- `maxHashtagsPerRun` (default 12): cap on hashtags visited per run
-- `maxRunMinutes` (default 60): total run duration limit
-- `scrollsPerHashtag` (default 5): incremental scroll steps per hashtag page
+**Platforms alternate.** After the least-recently-scraped ordering, hashtags are
+interleaved Instagram/Facebook so each platform rests for the whole of the
+other's scroll. A switch to the other platform uses the shorter
+`crossPlatformGapMs` instead of the full hashtag gap.
+
+**Every visit explains itself.** `hashtag_done` events (and the `tallies` rows
+behind them) carry `durationSeconds`, `scrollSteps` and a `stopReason` — `dry`
+(the feed stopped surfacing posts new to the campaign), `post_cap`
+(`maxPostsPerHashtag` reached), `budget` (time budget spent) or `steps` (fixed
+step count done). Each post also records **per-field provenance** in
+`field_sources`: which passive source supplied each value (capture, React prop,
+DOM, derived, enrichment), or `missed:<sources tried>` when everything came up
+empty.
+
+**Safety configuration keys** (in `config.json`, file-only). The shipped config
+runs **deep-scroll mode**: 10 hashtags per run, 20–28 minutes each, inside a
+330-minute budget.
+- `maxHashtagsPerRun` (required; shipped 10): cap on hashtags visited per run
+- `maxRunMinutes` (required; shipped 330): total run duration limit
+- `scrollsPerHashtag` (required; shipped 5): incremental scroll steps per hashtag
+  page — only used when `scrollMinutesPerHashtag` is not set
 - `scrollMinutesPerHashtag` (`[min, max]` minutes, optional, capped at 45): deep-scroll
   mode — scroll each hashtag for a randomized time budget instead of a step count.
   See "Deep scroll mode" in [ANTIBAN.md](ANTIBAN.md). When set, pair it with a lower
@@ -108,16 +138,22 @@ connects; the only enforced waits are the randomized gaps between hashtags
 - `scrollPauseMs` (`[min, max]`, default 3000–9000): jitter between scroll steps
 - `restEveryMs` / `restPauseMs` (`[min, max]`, defaults 2.5–5 min / 15–45 s):
   randomized "reading breaks" inside long scrolls
-- `dryStopAfterScrolls` (default 10, 0 disables): end a hashtag after this many
+- `dryStopAfterScrolls` (default 10, shipped 7, 0 disables): end a hashtag after this many
   consecutive scroll steps that surface no posts new to the campaign — the scroll
   stops at the frontier of what previous runs already recorded, so daily runs
   shrink automatically once the backlog is captured
 - `maxPostsPerHashtag` (default 3000, 0 disables): end a hashtag once this many
   posts have been collected
 - `gapBetweenHashtagsMs` (`[min, max]`, default 3–7 minutes): idle gap between hashtags
+- `crossPlatformGapMs` (`[min, max]`, default 1–2.5 minutes): shorter gap used when
+  the next hashtag is on the other platform — the platform being left just
+  started a rest that lasts the other's whole scroll
 - `initialDwellMs` (`[min, max]`, default 2–5 seconds): dwell before first scroll
 - `pageLoadDelayMs` (default 6000): wait after navigation before scraping
 - `maxPostVisitsPerRun` (default 8): cap on individual post enrichment visits per run
+- `postVisitGapMs` (`[min, max]`, default 45–120 seconds): pause between
+  enrichment post visits — its own pacing, since the full hashtag gap between
+  two post clicks resembles no human behavior
 - `pipelineTabs` (default true): enable single-tab pre-navigation during hashtag gaps
 - `journalRetentionDays` (default 30): days to keep forensic action logs
 
@@ -131,7 +167,7 @@ All JSON, all loopback.
 | `GET` | `/preflight?campaign=` | can a run start, and if not exactly why |
 | `GET` | `/campaigns` | list campaigns and their hashtags |
 | `POST` | `/campaigns` | create one (`{name, hashtags}`) |
-| `PATCH` | `/campaigns/:slug` | rename and/or replace its hashtags |
+| `PATCH` | `/campaigns/:slug` | update name, hashtags, campaign window, country and/or fbLocationId |
 | `DELETE` | `/campaigns/:slug` | remove the definition; results are kept |
 | `POST` | `/runs` | start a run (`{campaign, force?}`) → `202` |
 | `GET` | `/runs/active` | replayable snapshot of the in-flight run |
@@ -196,10 +232,17 @@ once-a-day guard, so clearing the database cannot make it forget).
   same jitter and danger checks as the main loop, and aborts on any BlockError
   without retry.
 - **Facebook** works but returns fewer (~4–15/run), and is scraped via
-  `facebook.com/search/posts?q=%23<tag>` rather than `/hashtag/`. Facebook hides
-  post URLs from the automation layer, so those posts are identified by a
-  **content fingerprint** of author and caption. Facebook records have no URL,
-  no like count, and no timestamp — fine for a tally, but not enrichable.
+  `facebook.com/search/posts?q=%23<tag>` rather than `/hashtag/` — with the
+  campaign's date window and `fbLocationId` applied as native search filters
+  when configured. Facebook hides post URLs from the automation layer, so posts
+  are identified by a photo/album `fbid` when one is exposed, else by a
+  **content fingerprint** of author and caption. Records are richer than they
+  used to be: permalinks are derived from harvested `fbid`s, author names are
+  recovered (base64-tagged in-page past the bridge's redaction, with a
+  card-text parser as fallback), and captions, images and like/comment counts
+  come from network capture when Facebook's responses carry them. What they
+  still never have is a **timestamp**, and they are not enrichable — freshness
+  counts them as in-window.
 - mcp-chrome also redacts person names in returned fields, so an author may read
   `<redacted>`. The real name is inside the caption text used for the
   fingerprint, so counting is unaffected.
